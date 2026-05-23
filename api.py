@@ -124,6 +124,9 @@ def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int
     for item in cog_field.get("activated_intents", [])[:max_nodes]:
         add_intent_id(item.get("intent_id"), active=item.get("role") == "seed")
 
+    for label in mem_result.get("extracted_query_intents", []):
+        add_label(label, active=True)
+
     # Expand the graph to include immediate neighbors of active nodes
     # This fulfills the request to "see all connections of an intent"
     expanded_relevant = set(node_order[:max_nodes])
@@ -193,8 +196,6 @@ async def chat(req: ChatRequest):
         # Query first. Chat text is short-term context; it should not create
         # long-term graph nodes unless explicitly enabled by env.
         mem_result = memory.query(memory_query)
-        nodes, active_ids = build_query_graph(memory, mem_result)
-
         # Use the prompt already built by runtime.query() — it has access
         # to the raw recall_result (direct_memories, associated_memories etc.)
         # which PromptBuilder needs.  Re-creating a PromptBuilder here and
@@ -239,6 +240,9 @@ async def chat(req: ChatRequest):
         
         # Tick memory decay
         memory.tick()
+        
+        # Build UI graph AFTER ingestion and decay so new nodes and edges exist!
+        nodes, active_ids = build_query_graph(memory, mem_result)
         
         # Persist to disk so memories survive restarts
         memory.save(db_path)
