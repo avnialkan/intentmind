@@ -43,7 +43,7 @@ app.add_middleware(
 print("[Sistem] Embedder ve Hafıza Yükleniyor...")
 embedder = SentenceTransformerEmbedder()
 
-db_path = "news_memory.json"
+db_path = "memory.json"
 if os.path.exists(db_path):
     print(f"[Sistem] {db_path} yükleniyor...")
     memory = IntentmindMemory.load(db_path, embedder=embedder)
@@ -229,6 +229,9 @@ async def chat(req: ChatRequest):
         
         # Tick memory decay
         memory.tick()
+        
+        # Persist to disk so memories survive restarts
+        memory.save(db_path)
         
         stats_dict = memory._store.stats()
         all_energies = [n.energy for n in memory._store.intents.values()]
