@@ -428,7 +428,7 @@ class RecallEngine:
         candidates = sorted(self.remove_duplicates(candidates), key=lambda x: x["score"], reverse=True)
         direct = self._select_direct(candidates)
         associated = self._select_associated(candidates, direct, query_intent_set)
-        weak_echo = [c for c in candidates if c["layer"] == 3][:2] if cognitive_state.weak_echo else []
+        weak_echo = [c for c in candidates if c["layer"] == 3][:1] if cognitive_state.weak_echo else []
         
         return {
             "direct_memories": direct,
@@ -676,9 +676,9 @@ class RecallEngine:
             if intent_counts[iid] <= max_per_intent:
                 selected.append(c)
 
-        # Semantic Collapse & Token Budgeting (Max 5 direct chunks)
+        # Semantic Collapse & Token Budgeting (Max 8 direct chunks)
         selected = self._collapse_semantic_duplicates(selected)
-        return selected[:5]
+        return selected[:8]
 
     def _select_associated(self, candidates, direct, query_intent_set):
         associated = [c for c in candidates if c["layer"] in [1, 2]]
@@ -695,7 +695,7 @@ class RecallEngine:
                 if (
                     self._associated_is_grounded(c)
                     and (
-                        c["score"] >= effective_direct_best * 0.85
+                        c["score"] >= effective_direct_best * 0.75
                         or c.get("query_intent_overlap", 0) >= 2
                         or (
                             c.get("edge_support", 0) > 1
@@ -711,7 +711,9 @@ class RecallEngine:
                 and c["score"] >= 0.40
             ]
             selected = self._collapse_semantic_duplicates(selected)
-            return selected[:4] # Max 4 associated chunks
+            l1_selected = [c for c in selected if c["layer"] == 1][:4]
+            l2_selected = [c for c in selected if c["layer"] == 2][:2]
+            return l1_selected + l2_selected
 
         best_score = associated[0]["score"]
         effective_best = min(best_score, 1.05)
@@ -725,7 +727,7 @@ class RecallEngine:
                     and c.get("edge_confidence", 0.0) >= 0.50
                 )
                 or (
-                    c["score"] >= effective_best * 0.82
+                    c["score"] >= effective_best * 0.75
                     and (
                         c.get("query_intent_overlap", 0) >= 2
                         or (
@@ -746,7 +748,9 @@ class RecallEngine:
             )
         ]
         selected = self._collapse_semantic_duplicates(selected)
-        return selected[:4]
+        l1_selected = [c for c in selected if c["layer"] == 1][:4]
+        l2_selected = [c for c in selected if c["layer"] == 2][:2]
+        return l1_selected + l2_selected
 
     def _associated_is_grounded(self, item):
         if item.get("query_intent_overlap", 0) >= 2:
