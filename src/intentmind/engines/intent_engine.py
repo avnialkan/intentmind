@@ -900,10 +900,12 @@ class IntentEngine:
 
     def create_edges(self, intent_ids: List[str], evidence_chunk_id: str | None = None):
         chunk_text = ""
+        is_chat = False
         if evidence_chunk_id:
             chunk = self.store.chunks.get(evidence_chunk_id)
             if chunk:
                 chunk_text = chunk.text
+                is_chat = chunk.source == "chat"
 
         for i in range(len(intent_ids)):
             for j in range(i + 1, len(intent_ids)):
@@ -912,9 +914,12 @@ class IntentEngine:
                 sim = cosine_similarity(a.embedding, b.embedding)
 
                 # Gate: Don't create edges between semantically unrelated intents.
-                # Relax this gate if the chunk is very small (they clearly belong together)
-                if len(intent_ids) > 4 and sim < 0.35:
-                    continue
+                if is_chat:
+                    if sim < 0.15: # Very loose for chat so sentences stay connected
+                        continue
+                else:
+                    if sim < 0.35: # Stricter for long documents/news
+                        continue
 
                 hub_overlap = max(a.hub_score, b.hub_score)
                 noise_risk = max(a.noise_score, b.noise_score)

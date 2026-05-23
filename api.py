@@ -124,6 +124,17 @@ def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int
     for item in cog_field.get("activated_intents", [])[:max_nodes]:
         add_intent_id(item.get("intent_id"), active=item.get("role") == "seed")
 
+    # Expand the graph to include immediate neighbors of active nodes
+    # This fulfills the request to "see all connections of an intent"
+    expanded_relevant = set(node_order[:max_nodes])
+    for intent_id in list(expanded_relevant):
+        neighbors = sorted(store.get_neighbors(intent_id), key=lambda x: x[1].weight * x[1].confidence, reverse=True)
+        for target_id, edge in neighbors[:2]:
+            if target_id not in expanded_relevant:
+                expanded_relevant.add(target_id)
+                if target_id not in node_order:
+                    node_order.append(target_id)
+
     relevant = set(node_order[:max_nodes])
     nodes = []
     for intent_id in node_order[:max_nodes]:
