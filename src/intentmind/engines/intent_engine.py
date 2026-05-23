@@ -40,6 +40,7 @@ class IntentEngine:
         self.external_extractor = extractor
         self._label_embedding_cache: dict[str, List[float]] = {}
         self._last_extraction_raw_count = 0
+        self._last_llm_edges: list = []  # Cached edges from last LLM extraction
         if enable_query_llm is None:
             enable_query_llm = os.environ.get("INTENTMIND_QUERY_LLM", "1").lower() in {"1", "true", "yes"}
         self.enable_query_llm = enable_query_llm
@@ -257,36 +258,35 @@ class IntentEngine:
                     {
                         "role": "system",
                         "content": (
-                            "You are an intent extraction engine.\n\n"
+                            "You are an intent extraction engine for a COGNITIVE GRAPH.\n\n"
                             "Task:\n"
-                            "Extract ONLY the core semantic intents from the message.\n\n"
-                            "Rules:\n"
-                            "- Intents MUST be extracted in the EXACT SAME LANGUAGE as the user's input.\n"
-                            "- ALWAYS extract proper nouns, brand names, and specific places (e.g., 'Ford', 'Menekşe') as exact entity intents.\n"
-                            "- For proper nouns, include their context/category to avoid ambiguity (e.g., use 'Menekşe Restoran' instead of just 'Menekşe', 'Ford servisi' instead of 'Ford').\n"
-                            "- NEVER generalize or omit proper nouns.\n"
-                            "- Return short canonical intents.\n"
-                            "- Do NOT explain.\n"
-                            "- Do NOT summarize.\n"
-                            "- Do NOT answer the user.\n"
-                            "- Ignore emotions unless they are the main intent.\n"
-                            "- Ignore conversational filler.\n"
-                            "- Extract semantic graph nodes, not request operators.\n"
-                            "- Assign role='topic' for durable subjects, role='entity' for named things/places/brands, role='fact' for concrete remembered facts.\n"
-                            "- Assign role='task' or role='modifier' for request shape such as asking for updates, summaries, recommendations, comparisons, explanations, how-to, or latest status.\n"
-                            "- Only topic/entity/fact roles are stored in the knowledge graph; task/modifier roles are metadata for the response and must not become graph nodes.\n"
-                            "- Prefer durable nouns/entities over actions unless the action is itself the remembered subject.\n"
-                            "- Maximum 5 intents.\n"
-                            "- Each intent maximum 3 words.\n"
-                            "- Similar meanings must normalize to same intent.\n"
-                            "- Preserve contextual entity meaning.\n"
-                            "- Assign a thematic 'domain' for each intent (e.g., 'Finance', 'Oncology', 'Military', 'Technology').\n"
-                            "- Output JSON only.\n\n"
+                            "Decompose the message into ATOMIC concept nodes AND their relationships.\n\n"
+                            "CRITICAL RULES FOR INTENTS:\n"
+                            "- Each intent MUST be a SINGLE WORD (1 word). This is NON-NEGOTIABLE.\n"
+                            "- The ONLY exception: proper nouns with 2 words (e.g., 'İstanbul', 'Merkez Bankası').\n"
+                            "- WRONG: 'arabamla gitmek' → RIGHT: 'araba' and 'gitmek' as SEPARATE intents.\n"
+                            "- WRONG: 'benzin fiyatı' → RIGHT: 'benzin' and 'fiyat' as SEPARATE intents.\n"
+                            "- Extract VERBS as bare infinitive/root form (e.g., 'gidiyorum' → 'gitmek').\n"
+                            "- Extract NOUNS as bare singular form (e.g., 'arabayla' → 'araba').\n"
+                            "- Intents MUST be in the SAME LANGUAGE as the input.\n"
+                            "- ALWAYS extract proper nouns as entity intents.\n"
+                            "- Ignore conversational filler (selam, nasılsın, evet, hayır, tamam).\n"
+                            "- Maximum 6 intents per message.\n"
+                            "- Output JSON only. No explanation.\n\n"
+                            "RULES FOR EDGES:\n"
+                            "- Define the relationship between each pair of related intents.\n"
+                            "- Edge types: instrumental (tool/vehicle for action), spatial (location/destination), "
+                            "causal (cause-effect), temporal (time relation), thematic (same topic), "
+                            "possessive (ownership), descriptive (attribute/property).\n"
+                            "- Only create edges between intents that have a REAL relationship in the sentence.\n"
+                            "- Do NOT create edges between unrelated intents.\n\n"
                             "Output format:\n"
                             "{\n"
                             "  \"intents\": [\n"
-                            "    {\"label\": \"intent_1\", \"type\": \"concept|entity|action|fact\", \"role\": \"topic|entity|fact|task|modifier\", \"domain\": \"Domain_Name\"},\n"
-                            "    {\"label\": \"intent_2\", \"type\": \"concept|entity|action|fact\", \"role\": \"topic|entity|fact|task|modifier\", \"domain\": \"Domain_Name\"}\n"
+                            "    {\"label\": \"word\", \"type\": \"concept|entity|action|fact\", \"role\": \"topic|entity|fact\", \"domain\": \"Domain\"}\n"
+                            "  ],\n"
+                            "  \"edges\": [\n"
+                            "    {\"from\": \"word_a\", \"to\": \"word_b\", \"type\": \"instrumental|spatial|causal|temporal|thematic|possessive|descriptive\"}\n"
                             "  ]\n"
                             "}"
                         ),
@@ -298,8 +298,11 @@ class IntentEngine:
             )
             content = response.choices[0].message.content
             data = json.loads(content)
+            # Cache LLM-extracted edges for use in ingest()
+            self._last_llm_edges = data.get("edges", [])
             return self._coerce_extracted_intents(data, source="llm")
         except Exception:
+            self._last_llm_edges = []
             return []
 
     def _extract_grounded_llm(self, query: str) -> List[ExtractedIntent]:
@@ -705,14 +708,14 @@ class IntentEngine:
             for iid in intent_ids:
                 if iid not in existing_chunk.intent_ids:
                     existing_chunk.intent_ids.append(iid)
-            self.create_edges(intent_ids, evidence_chunk_id=existing_chunk.chunk_id)
+            self._create_edges_from_llm_or_heuristic(intent_ids, evidence_chunk_id=existing_chunk.chunk_id)
             return existing_chunk
 
         chunk = self.store.add_chunk(
             text=text, summary=text[:240], embedding=embedding,
             intent_ids=intent_ids, source=source, chunk_id=chunk_id,
         )
-        self.create_edges(intent_ids, evidence_chunk_id=chunk.chunk_id)
+        self._create_edges_from_llm_or_heuristic(intent_ids, evidence_chunk_id=chunk.chunk_id)
         return chunk
 
     def _reinforce_intent(self, intent, candidate: IntentCandidate, now: float, boost: float):
@@ -782,6 +785,71 @@ class IntentEngine:
             return "thematic_link", 0.65
             
         return "co_occurrence_link", 0.62
+
+    def _create_edges_from_llm_or_heuristic(self, intent_ids: List[str], evidence_chunk_id: str | None = None):
+        """Use LLM-extracted typed edges when available, fall back to heuristic."""
+        llm_edges = self._last_llm_edges
+        self._last_llm_edges = []  # Consume once
+
+        if not llm_edges:
+            # Fallback to heuristic
+            self.create_edges(intent_ids, evidence_chunk_id=evidence_chunk_id)
+            return
+
+        # Build label→intent_id lookup
+        label_to_id = {}
+        for iid in intent_ids:
+            intent = self.store.intents.get(iid)
+            if intent:
+                label_to_id[intent.label.lower()] = iid
+
+        # LLM edge type → store edge type mapping
+        type_map = {
+            "instrumental": "instrumental_link",
+            "spatial": "spatial_link",
+            "causal": "causal_link",
+            "temporal": "temporal_link",
+            "thematic": "thematic_link",
+            "possessive": "actor_link",
+            "descriptive": "thematic_link",
+        }
+
+        created = set()
+        for edge_def in llm_edges:
+            from_label = edge_def.get("from", "").lower()
+            to_label = edge_def.get("to", "").lower()
+            edge_type_raw = edge_def.get("type", "thematic")
+
+            from_id = label_to_id.get(from_label)
+            to_id = label_to_id.get(to_label)
+
+            if not from_id or not to_id or from_id == to_id:
+                continue
+
+            edge_key = tuple(sorted([from_id, to_id]))
+            if edge_key in created:
+                continue
+            created.add(edge_key)
+
+            edge_type = type_map.get(edge_type_raw, "thematic_link")
+
+            # Weight based on edge type quality
+            type_weights = {
+                "instrumental_link": 0.80,
+                "spatial_link": 0.75,
+                "causal_link": 0.85,
+                "temporal_link": 0.65,
+                "thematic_link": 0.70,
+                "actor_link": 0.70,
+            }
+            weight = type_weights.get(edge_type, 0.65)
+
+            self.store.add_edge(
+                from_id, to_id,
+                edge_type=edge_type,
+                weight=weight,
+                evidence_chunk_id=evidence_chunk_id,
+            )
 
     def create_edges(self, intent_ids: List[str], evidence_chunk_id: str | None = None):
         chunk_text = ""
