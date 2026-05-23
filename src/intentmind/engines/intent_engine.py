@@ -41,6 +41,7 @@ class IntentEngine:
         self._label_embedding_cache: dict[str, List[float]] = {}
         self._last_extraction_raw_count = 0
         self._last_llm_edges: list = []  # Cached edges from last LLM extraction
+        self._grounded_cache: dict = {}  # { "text": (intents, edges) }
         if enable_query_llm is None:
             enable_query_llm = os.environ.get("INTENTMIND_QUERY_LLM", "1").lower() in {"1", "true", "yes"}
         self.enable_query_llm = enable_query_llm
@@ -203,10 +204,15 @@ class IntentEngine:
         return [(intent.label, intent.embedding) for _score, intent in matches[:limit]]
 
     def extract_intents_with_metadata(self, text: str) -> List[IntentCandidate]:
-        extracted = self._extract_with_external(text)
+        # Fast path: Did we just extract this exact text during query?
+        if self._grounded_cache and self._grounded_cache.get("text") == text.strip():
+            extracted = self._grounded_cache["intents"]
+            self._last_llm_edges = self._grounded_cache["edges"]
+        else:
+            extracted = self._extract_with_external(text)
+            if not extracted and (self.core_extractor == "llm" or self.enable_llm_enrichment):
+                extracted = self._extract_with_llm(text)
 
-        if not extracted and (self.core_extractor == "llm" or self.enable_llm_enrichment):
-            extracted = self._extract_with_llm(text)
         self._last_extraction_raw_count = len(extracted)
 
         result = []
@@ -339,34 +345,39 @@ class IntentEngine:
                     {
                         "role": "system",
                         "content": (
-                            "You are a memory recall assistant. The user has a query and a knowledge graph "
+                            "You are a memory recall assistant for a COGNITIVE GRAPH. The user has a query and a knowledge graph "
                             "with known concept labels.\n\n"
                             "Your job:\n"
                             "1. Identify which EXISTING concepts are directly referenced, mentioned, "
                             "or closely implied by the query.\n"
                             "2. List any genuinely NEW concepts in the query not covered by existing labels.\n\n"
-                            "Rules:\n"
-                            "- Intents MUST be extracted in the EXACT SAME LANGUAGE as the user's input.\n"
-                            "- ALWAYS extract proper nouns, brand names, and specific places (e.g., 'Ford', 'Menekşe') as exact entity intents.\n"
-                            "- For proper nouns, include their context/category to avoid ambiguity (e.g., use 'Menekşe Restoran' instead of just 'Menekşe', 'Ford servisi' instead of 'Ford').\n"
-                            "- NEVER generalize or omit proper nouns.\n"
-                            "- Return ultra-short, atomic concepts (1-3 words max). Do NOT return full sentences or long phrases. (e.g. use 'fırtına', 'çatı hasarı' instead of 'fırtınadan dolayı evin çatısı uçması').\n"
+                            "CRITICAL RULES FOR INTENTS:\n"
+                            "- Each intent MUST be a SINGLE WORD (1 word). This is NON-NEGOTIABLE.\n"
+                            "- The ONLY exception: proper nouns with 2 words (e.g., 'İstanbul', 'Merkez Bankası').\n"
+                            "- WRONG: 'arabamla gitmek' → RIGHT: 'araba' and 'gitmek' as SEPARATE intents.\n"
+                            "- WRONG: 'benzin fiyatı' → RIGHT: 'benzin' and 'fiyat' as SEPARATE intents.\n"
+                            "- Extract VERBS as bare infinitive/root form (e.g., 'gidiyorum' → 'gitmek', 'aldım' → 'almak').\n"
+                            "- Extract NOUNS as bare singular form (e.g., 'arabayla' → 'araba', 'benzine' → 'benzin').\n"
+                            "- Intents MUST be in the EXACT SAME LANGUAGE as the user's input.\n"
+                            "- ALWAYS extract proper nouns, brand names, and specific places as exact entity intents.\n"
                             "- Ignore conversational filler.\n"
                             "- Preserve contextual entity meaning. Do not reinterpret entities outside conversation context.\n"
-                            "- If an entity appeared previously (Existing concepts), preserve its exact semantic label.\n"
                             "- Only match concepts the query DIRECTLY talks about or strongly implies as durable subjects.\n"
-                            "- Do not match request operators as graph concepts, even if they exist in the graph from old data.\n"
+                            "- Do not match request operators as graph concepts.\n"
                             "- Assign role='topic' for durable subjects, role='entity' for named things/places/brands, role='fact' for concrete facts.\n"
-                            "- Assign role='task' or role='modifier' for request shape such as asking for updates, summaries, recommendations, comparisons, explanations, how-to, or latest status.\n"
-                            "- Only topic/entity/fact roles may be returned for graph recall; task/modifier roles should go in request metadata, not matched/new graph concepts.\n"
+                            "- Assign role='task' or role='modifier' for request shape (these won't become graph nodes).\n"
                             "- For 'matched', return labels EXACTLY as they appear in the existing list.\n"
-                            "- CRITICAL: If the query contains '--- Conversation History ---', use the history ONLY to resolve pronouns or context (e.g. 'is it safe?'). Do NOT extract intents from the history itself! Extract intents ONLY for the '--- Current Query ---'.\n"
-                            "- Use confidence 0.95 for concepts explicitly mentioned in the current query.\n"
+                            "- CRITICAL: If the query contains '--- Conversation History ---', extract intents ONLY for the '--- Current Query ---'.\n"
                             "- Assign a thematic 'domain' for each intent (e.g., 'Finance', 'Oncology', 'Military').\n"
-                            "- Return at most 5 matched + 2 new.\n\n"
+                            "- Return at most 5 matched + 3 new.\n\n"
+                            "RULES FOR EDGES:\n"
+                            "- Define the relationship between each pair of related intents.\n"
+                            "- Edge types: instrumental, spatial, causal, temporal, thematic, possessive, descriptive.\n"
+                            "- Use ONLY the labels you extracted in 'matched' or 'new'.\n\n"
                             "Return JSON:\n"
-                            "{\"matched\": [{\"label\": \"...\", \"confidence\": 0.0, \"role\": \"topic|entity|fact\", \"domain\": \"...\"}], "
-                            "\"new\": [{\"label\": \"...\", \"type\": \"concept|entity|action|fact\", \"role\": \"topic|entity|fact\", \"confidence\": 0.0, \"domain\": \"...\"}], "
+                            "{\"matched\": [{\"label\": \"single_word\", \"confidence\": 0.0, \"role\": \"topic|entity|fact\", \"domain\": \"...\"}], "
+                            "\"new\": [{\"label\": \"single_word\", \"type\": \"concept|entity|action|fact\", \"role\": \"topic|entity|fact\", \"confidence\": 0.0, \"domain\": \"...\"}], "
+                            "\"edges\": [{\"from\": \"word_a\", \"to\": \"word_b\", \"type\": \"instrumental|spatial|causal|temporal|thematic|possessive|descriptive\"}], "
                             "\"request\": {\"role\": \"task|modifier\", \"description\": \"...\"}}"
                         ),
                     },
@@ -434,12 +445,20 @@ class IntentEngine:
                         source="llm_grounded_new",
                         reason="new concept from query",
                     )
-                if extracted.label and self._is_graph_intent(extracted) and confidence >= 0.75 and new_count < 2:
+                if extracted.label and self._is_graph_intent(extracted) and confidence >= 0.70 and new_count < 3:
                     results.append(extracted)
                     new_count += 1
 
-            return results
+            # Cache the results for ingestion so we don't call LLM again!
+            # The query string format from api.py has the raw text at the end:
+            raw_text = query.split("--- Current Query (EXTRACT INTENTS PRIMARILY FOR THIS) ---\nuser: ")[-1] if "--- Current Query" in query else query
+            self._grounded_cache = {
+                "text": raw_text.strip(),
+                "intents": results,
+                "edges": data.get("edges", [])
+            }
 
+            return results
         except Exception:
             # Fallback to standard extraction on any error
             return self._extract_with_llm(query)
