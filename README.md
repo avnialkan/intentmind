@@ -20,7 +20,7 @@ If you are building an autonomous system or an AI agent that lives for more than
 
 ## 🌟 The Solution: Why Intentmind?
 
-Intentmind doesn't just store documents; it builds a **living, breathing Cognitive Graph**. 
+Intentmind doesn't just store documents; it builds a **dynamic associative memory graph with energy-based activation, decay, reinforcement, and traceable recall paths**. 
 
 ### 1. Associative Recall (Semantic Drift Recovery)
 When data is ingested, Intentmind extracts core concepts (nodes) and connects them (edges). When a user mentions a concept, the system doesn't just do a vector search—it **traverses the graph**. 
@@ -51,15 +51,17 @@ GraphRAG is fantastic for static document analysis, but it fails for **persisten
 
 ## 📊 Performance Benchmarks
 
-Intentmind is built to survive long-term deployments where other systems degrade.
+*Synthetic Semantic Drift Benchmark*
+- **Dataset:** 1,000 memory facts
+- **Noise:** 30%
+- **Query type:** delayed indirect recall
 
-| Benchmark Metric | Vanilla RAG | GraphRAG | Intentmind |
-| :--- | :--- | :--- | :--- |
-| **Delayed Recall Accuracy** | Low | Medium | **High** |
-| **Semantic Drift Resistance** | Poor | Medium | **Excellent** |
-| **Memory Pollution (Noise) Resistance** | Fails at scale | Medium | **High** (Auto-pruning) |
-| **Long-session Degradation** | Severe | Moderate | **Near-Zero** |
-| **Contradiction Resolution** | Low | Low | **High** (Energy-based priority) |
+| System | Accuracy |
+| :--- | :--- |
+| Vanilla vector search | 42% |
+| **Intentmind** | **68%** |
+
+*Note: These are local regression benchmarks, not independent research claims. Intentmind is built to be resilient to long-session degradation where other systems degrade.*
 
 ---
 
@@ -85,14 +87,20 @@ pip install "intentmind[all]"
 
 ### 1-Minute Integration
 
-Intentmind is completely language-agnostic.
+While the core graph logic is language-agnostic, extraction quality is **embedding-model dependent**. We recommend using multilingual models for non-English data.
 
 ```python
 from intentmind import IntentmindMemory
 from intentmind.embeddings import SentenceTransformerEmbedder
 
-# 1. Initialize the Cognitive Engine
-mem = IntentmindMemory(embedder=SentenceTransformerEmbedder())
+# Option A: Local deterministic demo (fastest, no LLM needed)
+mem = IntentmindMemory(is_test=True, core_extractor="deterministic")
+
+# Option B: Production embeddings with deterministic extraction
+# mem = IntentmindMemory(embedder=SentenceTransformerEmbedder(), core_extractor="deterministic")
+
+# Option C: Production with full LLM-assisted extraction (requires OPENAI_API_KEY)
+# mem = IntentmindMemory(embedder=SentenceTransformerEmbedder(), core_extractor="llm")
 
 # 2. Teach it concepts (Happens naturally during conversation)
 mem.add("I need car insurance but I have no money.")
@@ -130,7 +138,7 @@ mem = IntentmindMemory.load("my_agent_brain.json")
 
 ## 📊 Visualizing the "Brain"
 
-Intentmind isn't a black box. You can export the entire Cognitive Graph to an interactive HTML map to literally see what your AI is thinking and how it connects concepts.
+Intentmind isn't a black box. You can export the entire Cognitive Graph to an interactive HTML map to visualize the graph structure, energy levels, and synaptic connections.
 
 ```python
 mem.visualize("memory_map.html")

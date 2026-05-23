@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from .store import MemoryStore
 from .embeddings import BaseEmbedder, FakeEmbedder
-from .engines import IntentEngine, EmotionEngine, RecallEngine, EnergyEngine
+from .engines import IntentEngine, CognitiveStateEngine, RecallEngine, EnergyEngine
 from .builders import PromptBuilder
 from .persistence import JsonPersistence
 
@@ -61,7 +61,7 @@ class IntentmindMemory:
             model=model,
             extractor=extractor,
         )
-        self._emotion = EmotionEngine(self.embedder)
+        self._cognitive_state = CognitiveStateEngine(self.embedder)
         self._recall = RecallEngine(self._store)
         self._energy = EnergyEngine(self._store)
         self._prompt = PromptBuilder()
@@ -77,8 +77,8 @@ class IntentmindMemory:
         query_emb = self.embedder.embed(user_query)
         t_embed = _time.perf_counter()
 
-        emotional_state = self._emotion.detect(query_emb)
-        t_emotion = _time.perf_counter()
+        cognitive_state = self._cognitive_state.detect(query_emb)
+        t_state = _time.perf_counter()
 
         query_token_embeddings = self._intent_engine.extract_query_intents(user_query)
         t_extract = _time.perf_counter()
@@ -88,14 +88,14 @@ class IntentmindMemory:
         recall_result = self._recall.recall(
             query=user_query, 
             query_embedding=query_emb, 
-            emotional_state=emotional_state,
+            cognitive_state=cognitive_state,
             query_intent_labels=query_intent_labels,
             query_token_embeddings=query_token_embeddings,
             energy_engine=self._energy,
         )
         t_recall = _time.perf_counter()
 
-        prompt = self._prompt.build(user_query=user_query, recall_result=recall_result, emotional_state=emotional_state)
+        prompt = self._prompt.build(user_query=user_query, recall_result=recall_result, cognitive_state=cognitive_state)
         t_prompt = _time.perf_counter()
 
         self.metadata["total_queries"] = self.metadata.get("total_queries", 0) + 1
@@ -103,8 +103,8 @@ class IntentmindMemory:
         total_ms = (t_prompt - t0) * 1000
         latency_breakdown = {
             "embed_query_ms": round((t_embed - t0) * 1000, 2),
-            "emotion_ms": round((t_emotion - t_embed) * 1000, 2),
-            "extractor_ms": round((t_extract - t_emotion) * 1000, 2),
+            "cognitive_state_ms": round((t_state - t_embed) * 1000, 2),
+            "extractor_ms": round((t_extract - t_state) * 1000, 2),
             "recall_ms": round((t_recall - t_extract) * 1000, 2),
             "prompt_ms": round((t_prompt - t_recall) * 1000, 2),
             "total_ms": round(total_ms, 2),
@@ -112,7 +112,7 @@ class IntentmindMemory:
 
         return {
             "prompt": prompt,
-            "emotion": emotional_state.to_dict(),
+            "cognitive_state": cognitive_state.to_dict(),
             "memories": {
                 "direct": len(recall_result["direct_memories"]),
                 "associated": len(recall_result["associated_memories"]),

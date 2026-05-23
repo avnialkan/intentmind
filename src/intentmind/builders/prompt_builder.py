@@ -50,7 +50,7 @@ class PromptBuilder:
     #  PUBLIC API                                                         #
     # ================================================================== #
 
-    def build(self, user_query, recall_result, emotional_state):
+    def build(self, user_query, recall_result, cognitive_state):
         role = self._build_role()
         graph = self._build_graph_state(recall_result)
         memories = self._build_memories(recall_result)

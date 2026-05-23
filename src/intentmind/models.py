@@ -111,8 +111,8 @@ class IntentEdge:
 
 
 @dataclass
-class EmotionalState:
-    current: str = "nötr"
+class CognitiveState:
+    current: str = "neutral"
     confidence: float = 1.0
     weak_echo: bool = False
 

@@ -11,7 +11,7 @@ class RecallEngine:
         self.store = store
         self.intent_match_threshold = intent_match_threshold
 
-    def activation_score(self, query_embedding, intent, emotional_state):
+    def activation_score(self, query_embedding, intent, cognitive_state):
         query_similarity = cosine_similarity(query_embedding, intent.embedding)
         edges = self.store.get_neighbors(intent.intent_id)
         edge_energy = sum(e.energy for _, e in edges) / len(edges) if edges else 0.40
@@ -28,11 +28,11 @@ class RecallEngine:
             - intent.noise_score * 0.20
         )
         multipliers = {
-            "nötr": 1.00, "merak": 1.00, "heyecan": 1.00,
-            "güven": 1.15, "şüphe": 1.10, "korku": 1.20,
+            "neutral": 1.00, "curious": 1.00,
+            "confident": 1.15, "skeptical": 1.10, "urgent": 1.25, "cautious": 1.20,
         }
-        m = multipliers.get(emotional_state.current, 1.00)
-        factor = 1.0 + ((m - 1.0) * emotional_state.confidence)
+        m = multipliers.get(cognitive_state.current, 1.00)
+        factor = 1.0 + ((m - 1.0) * cognitive_state.confidence)
         return round(base * factor, 4)
 
     def chunk_score(self, query_embedding, chunk, intent, path_strength):
@@ -58,7 +58,7 @@ class RecallEngine:
     def build_layers(
         self,
         query_embedding,
-        emotional_state,
+        cognitive_state,
         query_intent_labels=None,
         query_token_embeddings=None,
         field_seed_ids=None,
@@ -78,7 +78,7 @@ class RecallEngine:
         for intent in self.store.intents.values():
             if intent.state == "archived":
                 continue
-            score = self.activation_score(query_embedding, intent, emotional_state)
+            score = self.activation_score(query_embedding, intent, cognitive_state)
 
             # Query intent matching is resolved once up front. This avoids
             # scanning every query-token embedding against every graph node.
@@ -175,7 +175,7 @@ class RecallEngine:
                     })
         layers[1] = self._dedupe_layer(layers[1])[:12]
 
-        if emotional_state.weak_echo:
+        if cognitive_state.weak_echo:
             seen_l1 = {item["intent"].intent_id for item in layers[1]}
             seen_all = seen_l0 | seen_l1
             
@@ -248,7 +248,7 @@ class RecallEngine:
         self,
         query,
         query_embedding,
-        emotional_state,
+        cognitive_state,
         query_intent_labels=None,
         query_token_embeddings=None,
         energy_engine=None,
@@ -259,7 +259,7 @@ class RecallEngine:
         query_match_intent_ids = self._matching_intent_ids(query_intent_labels, query_token_embeddings)
         layers = self.build_layers(
             query_embedding,
-            emotional_state,
+            cognitive_state,
             query_intent_labels,
             query_token_embeddings,
             query_match_intent_ids=query_match_intent_ids,
@@ -379,7 +379,7 @@ class RecallEngine:
         candidates = sorted(self.remove_duplicates(candidates), key=lambda x: x["score"], reverse=True)
         direct = self._select_direct(candidates)
         associated = self._select_associated(candidates, direct, query_intent_set)
-        weak_echo = [c for c in candidates if c["layer"] == 3][:2] if emotional_state.weak_echo else []
+        weak_echo = [c for c in candidates if c["layer"] == 3][:2] if cognitive_state.weak_echo else []
         
         return {
             "direct_memories": direct,
