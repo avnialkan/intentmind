@@ -43,13 +43,11 @@ class RecallEngine:
         "archived": 0.50,   # Fading — heavily penalized
     }
 
-    def chunk_score(self, query_embedding, chunk, intent, path_strength):
+    def chunk_score(self, query_embedding, chunk, intent, path_strength, layer_id=0):
         query_chunk_sim = cosine_similarity(query_embedding, chunk.embedding)
         seconds_since = time.time() - chunk.created_at
         novelty_score = max(0.0, 1.0 - (seconds_since / 3600))
         intent_match = path_strength # use path strength as intent relevance
-        contextual_relevance = 0.50 # baseline project relevance
-        reinforcement_bonus = min(0.10, chunk.reinforcement_count * 0.01)
         
         # Memory tier multiplier (importance)
         tier_mult = self._TIER_MULTIPLIERS.get(
@@ -61,12 +59,18 @@ class RecallEngine:
         if getattr(chunk, "noise_score", 0) > 0.5:
             trust *= 0.5
             
-        # Multiplicative Cognitive Scoring
-        # chunk_score = intent_energy × chunk_relevance × recency × importance × trust
-        # Note: intent_match here carries both intent_energy and edge_weight (path_strength)
+        # For direct matches (layer 0), query_chunk_sim is critical.
+        # For associated matches (layer > 0), the graph path is what matters!
+        if layer_id > 0:
+            intent_chunk_sim = cosine_similarity(intent.embedding, chunk.embedding)
+            relevance = max(0.1, path_strength) * max(0.1, intent_chunk_sim)
+            # Small bonus if the query happens to match the chunk text
+            relevance += max(0, query_chunk_sim) * 0.20
+        else:
+            relevance = max(0.1, query_chunk_sim) * max(0.1, intent_match)
+            
         base = (
-            max(0.1, query_chunk_sim) * 
-            max(0.1, intent_match) * 
+            relevance * 
             max(0.5, novelty_score) * 
             tier_mult * 
             trust
@@ -320,7 +324,7 @@ class RecallEngine:
                     energy_engine=energy_engine,
                 )
 
-        thresholds = {0: 0.25, 1: 0.42, 2: 0.40, 3: 0.45}
+        thresholds = {0: 0.25, 1: 0.38, 2: 0.35, 3: 0.45}
         candidates, rejected = [], []
         
         for layer_id, intent_items in layers.items():
@@ -330,7 +334,7 @@ class RecallEngine:
                 called_by = item.get("called_by")
                 
                 for chunk in self.store.get_chunks_by_intent(intent.intent_id):
-                    score = self.chunk_score(query_embedding, chunk, intent, path_strength)
+                    score = self.chunk_score(query_embedding, chunk, intent, path_strength, layer_id=layer_id)
                     query_intent_overlap = self._query_intent_overlap(
                         chunk,
                         query_intent_set,
@@ -362,7 +366,8 @@ class RecallEngine:
 
                         # Semantic relevance gate: HARD REJECT chunks whose
                         # actual text is unrelated to the query. No mercy.
-                        if query_chunk_similarity < 0.30:
+                        # EXCEPT for chat chunks — conversational context relies on the graph, not text matching.
+                        if query_chunk_similarity < 0.30 and chunk.source != "chat":
                             continue  # Skip entirely — this chunk is noise
                     
                     # Association bonus
