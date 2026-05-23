@@ -96,6 +96,17 @@ class RecallEngine:
             # scanning every query-token embedding against every graph node.
             is_embedding_match = intent.intent_id in query_match_intent_ids
             is_label_match = intent.label in query_intent_label_set
+
+            # Partial label match: "benzin" should activate "benzin fiyatları"
+            if not is_label_match:
+                intent_words = set(intent.label.lower().split())
+                for ql in query_intent_label_set:
+                    ql_words = set(ql.lower().split())
+                    # Query label is a subset of intent label (or vice versa)
+                    if ql_words and intent_words and (ql_words.issubset(intent_words) or intent_words.issubset(ql_words)):
+                        is_label_match = True
+                        break
+
             is_direct = is_embedding_match or is_label_match
 
             # Conversational Priming: If intent has high residual energy from previous turns
@@ -166,6 +177,16 @@ class RecallEngine:
                 neighbor = self.store.intents.get(neighbor_id)
                 if neighbor_id in seen_l0 and neighbor and neighbor.label in query_intent_label_set:
                     continue
+
+                # co_occurrence_link edges are noisy batch artifacts.
+                # Only traverse them if source and target intents are
+                # semantically similar (i.e. the connection is real).
+                if edge.edge_type == "co_occurrence_link":
+                    if neighbor:
+                        intent_sim = cosine_similarity(intent.embedding, neighbor.embedding)
+                        if intent_sim < 0.40:
+                            continue  # Skip — this edge is noise
+
                 if neighbor and neighbor.state == "active" and edge.energy >= 0.45 and edge.weight >= 0.40 and edge.confidence >= 0.50:
                     edge_score = self._edge_path_score(intent, neighbor, edge)
                     layers[1].append({
@@ -293,7 +314,7 @@ class RecallEngine:
                     energy_engine=energy_engine,
                 )
 
-        thresholds = {0: 0.25, 1: 0.30, 2: 0.35, 3: 0.45}
+        thresholds = {0: 0.25, 1: 0.42, 2: 0.40, 3: 0.45}
         candidates, rejected = [], []
         
         for layer_id, intent_items in layers.items():
@@ -332,6 +353,11 @@ class RecallEngine:
                             score -= 0.22
                         elif query_intent_overlap == 1 and edge_support <= 1 and edge_confidence < 0.56:
                             score -= 0.08
+
+                        # Semantic relevance gate: HARD REJECT chunks whose
+                        # actual text is unrelated to the query. No mercy.
+                        if query_chunk_similarity < 0.30:
+                            continue  # Skip entirely — this chunk is noise
                     
                     # Association bonus
                     if called_by:

@@ -192,6 +192,15 @@ async def chat(req: ChatRequest):
         # "memories.items", but PromptBuilder expects "direct_memories" etc.
         system_prompt = mem_result["prompt"]
 
+        # === DEBUG: Log what's actually going to the LLM ===
+        print("\n" + "=" * 60)
+        print("SYSTEM PROMPT SENT TO LLM:")
+        print("=" * 60)
+        print(system_prompt[:2000])
+        if len(system_prompt) > 2000:
+            print(f"... [truncated, total {len(system_prompt)} chars]")
+        print("=" * 60 + "\n")
+
         # Short-term history resolves follow-ups ("sunuculara gönderiyor mu?")
         # while the graph supplies long-term recalled knowledge.
         oai_msgs = build_openai_messages(system_prompt, req.messages)

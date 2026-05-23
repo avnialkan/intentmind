@@ -795,12 +795,32 @@ class IntentEngine:
                 a = self.store.intents[intent_ids[i]]
                 b = self.store.intents[intent_ids[j]]
                 sim = cosine_similarity(a.embedding, b.embedding)
+
+                # Gate: Don't create edges between semantically unrelated intents.
+                # This is the #1 source of recall noise — batch co-occurrence
+                # creates false connections (e.g. "benzin" ↔ "Bursaspor").
+                if sim < 0.35:
+                    continue
+
                 hub_overlap = max(a.hub_score, b.hub_score)
                 noise_risk = max(a.noise_score, b.noise_score)
-                edge_score = (sim * 0.25 + 0.35 + 0.15 + 0.15 - hub_overlap * 0.15 - noise_risk * 0.10)
+
+                # Rebalanced formula: similarity is now dominant (0.45 weight)
+                edge_score = (
+                    sim * 0.45
+                    + 0.25              # baseline co-presence
+                    + 0.10              # structural bonus
+                    - hub_overlap * 0.15
+                    - noise_risk * 0.10
+                )
                 
                 if edge_score >= 0.55:
                     edge_type, type_weight = self._classify_edge_heuristic(a, b, chunk_text)
+
+                    # Extra gate for co_occurrence: require higher similarity
+                    if edge_type == "co_occurrence_link" and sim < 0.40:
+                        continue
+
                     weight = min(edge_score, type_weight)
                     
                     self.store.add_edge(
