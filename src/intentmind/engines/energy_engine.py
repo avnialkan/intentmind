@@ -226,14 +226,67 @@ class EnergyEngine:
 
     def tick(self, hours: float = 1.0) -> dict:
         """
-        Backward compatibility for existing tick calls. 
-        In this continuous model, ticking is passive, but we can do a cleanup.
+        Lifecycle tick: decay energy + manage memory tier transitions.
+
+        Tier promotion/demotion rules:
+          working  → episodic   after 300s (5 min) of inactivity
+          episodic → semantic   if reinforcement_count >= 3 AND connected to 2+ active intents
+          episodic → archived   if energy < 0.10
+          semantic → archived   if energy < 0.02 (very slow — consolidated knowledge is durable)
         """
         now = time.time()
-        # Ensure all nodes are updated with current decayed energy
+        tier_promotions = {"working_to_episodic": 0, "episodic_to_semantic": 0,
+                           "episodic_to_archived": 0, "semantic_to_archived": 0}
+
+        # 1. Decay intent node energies
         for node in self.store.intents.values():
             e = self.get_energy(node, now)
             self.write_energy(node, e, now)
             if e < 0.05:
                 node.state = "archived"
-        return {"timestamp": now}
+
+        # 2. Memory tier lifecycle for chunks
+        for chunk in self.store.chunks.values():
+            age_seconds = now - chunk.created_at
+
+            if chunk.memory_tier == "working":
+                if age_seconds > 300:  # 5 minutes
+                    chunk.memory_tier = "episodic"
+                    tier_promotions["working_to_episodic"] += 1
+
+            elif chunk.memory_tier == "episodic":
+                # Promote to semantic if well-reinforced and connected
+                if chunk.reinforcement_count >= 3:
+                    active_intent_count = sum(
+                        1 for iid in chunk.intent_ids
+                        if iid in self.store.intents and self.store.intents[iid].state == "active"
+                    )
+                    if active_intent_count >= 2:
+                        chunk.memory_tier = "semantic"
+                        tier_promotions["episodic_to_semantic"] += 1
+                        continue
+
+                # Demote to archived if low energy across all its intents
+                if chunk.intent_ids:
+                    max_intent_energy = max(
+                        (self.get_energy(self.store.intents[iid], now)
+                         for iid in chunk.intent_ids if iid in self.store.intents),
+                        default=0.0,
+                    )
+                    if max_intent_energy < 0.10:
+                        chunk.memory_tier = "archived"
+                        tier_promotions["episodic_to_archived"] += 1
+
+            elif chunk.memory_tier == "semantic":
+                # Semantic knowledge is durable — only archive at very low energy
+                if chunk.intent_ids:
+                    max_intent_energy = max(
+                        (self.get_energy(self.store.intents[iid], now)
+                         for iid in chunk.intent_ids if iid in self.store.intents),
+                        default=0.0,
+                    )
+                    if max_intent_energy < 0.02:
+                        chunk.memory_tier = "archived"
+                        tier_promotions["semantic_to_archived"] += 1
+
+        return {"timestamp": now, "tier_transitions": tier_promotions}

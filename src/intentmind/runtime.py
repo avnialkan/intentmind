@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from .store import MemoryStore
 from .embeddings import BaseEmbedder, FakeEmbedder
-from .engines import IntentEngine, CognitiveStateEngine, RecallEngine, EnergyEngine
+from .engines import IntentEngine, CognitiveStateEngine, RecallEngine, EnergyEngine, ContradictionEngine
 from .builders import PromptBuilder
 from .persistence import JsonPersistence
 
@@ -64,10 +64,16 @@ class IntentmindMemory:
         self._cognitive_state = CognitiveStateEngine(self.embedder)
         self._recall = RecallEngine(self._store)
         self._energy = EnergyEngine(self._store)
+        self._contradiction = ContradictionEngine(self._store, self.embedder)
         self._prompt = PromptBuilder()
+        self._last_contradictions: list = []
 
     def add(self, text: str, source: str = "chat", chunk_id: str | None = None) -> str:
         chunk = self._intent_engine.ingest(text=text, source=source, chunk_id=chunk_id)
+        # New chunks start in working memory
+        chunk.memory_tier = "working"
+        # Check for contradictions with existing memories
+        self._last_contradictions = self._contradiction.check_and_resolve(chunk)
         return chunk.chunk_id
 
     def query(self, user_query: str) -> dict:
@@ -142,6 +148,8 @@ class IntentmindMemory:
             "trace": self._build_trace(recall_result),
             "latency_breakdown": latency_breakdown,
             "extracted_query_intents": query_intent_labels,
+            "contradictions": self._last_contradictions,
+            "memory_tiers": self._tier_distribution(),
         }
 
     def save(self, path: str | Path) -> None:
@@ -156,10 +164,18 @@ class IntentmindMemory:
     def tick(self, hours: float = 1.0) -> dict:
         energy_stats = self._energy.tick(hours=hours)
         cons_stats = self.consolidate()
-        return {**energy_stats, **cons_stats}
+        return {**energy_stats, **cons_stats, "memory_tiers": self._tier_distribution()}
         
     def consolidate(self) -> dict:
         return self._intent_engine.consolidate_memory()
+
+    def _tier_distribution(self) -> dict:
+        """Return count of chunks in each memory tier."""
+        tiers = {"working": 0, "episodic": 0, "semantic": 0, "archived": 0}
+        for chunk in self._store.chunks.values():
+            tier = getattr(chunk, "memory_tier", "episodic")
+            tiers[tier] = tiers.get(tier, 0) + 1
+        return tiers
         
     def visualize(self, output_html: str = "memory_map.html") -> str:
         from .vis import GraphVisualizer

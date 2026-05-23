@@ -35,6 +35,14 @@ class RecallEngine:
         factor = 1.0 + ((m - 1.0) * cognitive_state.confidence)
         return round(base * factor, 4)
 
+    # Memory tier multipliers for recall scoring
+    _TIER_MULTIPLIERS = {
+        "working": 1.20,    # Fresh context — boosted
+        "episodic": 1.00,   # Baseline
+        "semantic": 1.10,   # Consolidated knowledge — trusted
+        "archived": 0.50,   # Fading — heavily penalized
+    }
+
     def chunk_score(self, query_embedding, chunk, intent, path_strength):
         query_chunk_sim = cosine_similarity(query_embedding, chunk.embedding)
         seconds_since = time.time() - chunk.created_at
@@ -43,17 +51,21 @@ class RecallEngine:
         contextual_relevance = 0.50 # baseline project relevance
         reinforcement_bonus = min(0.10, chunk.reinforcement_count * 0.01)
         
-        # New v3 formula
-        return round(
+        # Memory tier multiplier
+        tier_mult = self._TIER_MULTIPLIERS.get(
+            getattr(chunk, "memory_tier", "episodic"), 1.00
+        )
+        
+        base = (
             query_chunk_sim * 0.35
             + intent_match * 0.30
             + contextual_relevance * 0.20
             + novelty_score * 0.10
             + chunk.feedback_score * 0.05
             + reinforcement_bonus
-            - chunk.noise_score * 0.20,
-            4,
+            - chunk.noise_score * 0.20
         )
+        return round(base * tier_mult, 4)
 
     def build_layers(
         self,
@@ -273,7 +285,7 @@ class RecallEngine:
                 cognitive_field = energy_engine.activate_field(field_seed_ids)
                 layers = self.build_layers(
                     query_embedding,
-                    emotional_state,
+                    cognitive_state,
                     query_intent_labels,
                     query_token_embeddings,
                     field_seed_ids=field_seed_ids,

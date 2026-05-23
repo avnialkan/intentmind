@@ -31,6 +31,7 @@ class Chunk:
     feedback_score: float = 0.0
     noise_score: float = 0.0
     reinforcement_count: int = 1
+    memory_tier: str = "episodic"  # working | episodic | semantic | archived
 
     def to_dict(self) -> dict:
         return asdict(self)
