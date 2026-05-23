@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intentmind"
+version = "0.1.5"
+description = "Language-agnostic associative memory runtime for persistent AI systems"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Intentmind Fair-Code License (Non-Commercial)"}
+authors = [
+    { name = "Intentmind Contributors" }
+]
+keywords = ["ai", "memory", "agents", "rag", "graph", "retrieval", "embeddings"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/avnialkan/intentmind"
+Repository = "https://github.com/avnialkan/intentmind"
+Issues = "https://github.com/avnialkan/intentmind/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+faiss = [
+    "faiss-cpu>=1.7.0",
+    "numpy>=1.24",
+]
+sentence-transformers = ["sentence-transformers>=2.7.0"]
+vis = ["networkx>=3.0", "pyvis>=0.3.2"]
+langchain = ["langchain-core>=0.1.0"]
+llm = ["openai>=1.0.0", "python-dotenv>=1.0.0"]
+api = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "sentence-transformers>=2.7.0",
+    "faiss-cpu>=1.7.0",
+    "numpy>=1.24",
+]
+benchmark = ["tqdm>=4.66.0", "openai>=1.0.0", "python-dotenv>=1.0.0"]
+all = [
+    "sentence-transformers>=2.7.0",
+    "networkx>=3.0",
+    "pyvis>=0.3.2",
+    "langchain-core>=0.1.0",
+    "faiss-cpu>=1.7.0",
+    "numpy>=1.24",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+]

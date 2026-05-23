@@ -1,0 +1,52 @@
+[
+    {
+        "id": "global_1",
+        "type": "global_sensemaking",
+        "query": "What are the main themes in the dataset?"
+    },
+    {
+        "id": "global_2",
+        "type": "global_sensemaking",
+        "query": "What are the major character archetypes present across the stories, and how do they compare?"
+    },
+    {
+        "id": "global_3",
+        "type": "global_sensemaking",
+        "query": "How does the concept of social judgment affect the protagonists' decisions throughout the narratives?"
+    },
+    {
+        "id": "global_4",
+        "type": "global_sensemaking",
+        "query": "What recurring patterns of deception and revelation drive the plot developments?"
+    },
+    {
+        "id": "global_5",
+        "type": "global_sensemaking",
+        "query": "How do the stories portray the tension between individual desire and societal expectation?"
+    },
+    {
+        "id": "activity_1",
+        "type": "activity_sensemaking",
+        "query": "Who are the most influential characters in shaping the outcomes of both stories, and what connects them?"
+    },
+    {
+        "id": "activity_2",
+        "type": "activity_sensemaking",
+        "query": "What are the key turning points in both novels, and what causes them?"
+    },
+    {
+        "id": "activity_3",
+        "type": "activity_sensemaking",
+        "query": "How do acts of kindness versus acts of cruelty shape character development across the dataset?"
+    },
+    {
+        "id": "specific_1",
+        "type": "specific_retrieval",
+        "query": "What specific events lead to Elizabeth Bennet changing her opinion of Mr. Darcy?"
+    },
+    {
+        "id": "specific_2",
+        "type": "specific_retrieval",
+        "query": "What is the sequence of events that leads to the creature's first act of violence in Frankenstein?"
+    }
+]

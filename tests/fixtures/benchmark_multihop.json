@@ -1,0 +1,31 @@
+{
+  "memories": [
+    { "chunk_id": "m_1", "text": "Benim adim Alex ve 32 yasinda, Istanbul'da yasayan bir yazilimciyim.", "intents": ["Alex", "Istanbul", "software developer"] },
+    { "chunk_id": "m_2", "text": "Gecen ay yeni bir araba aldim, kirmizi bir Honda Civic. Cok severek biniyorum.", "intents": ["car", "Honda Civic", "red car"] },
+    { "chunk_id": "m_3", "text": "Kopegimin adi Tarcin, o 4 yasinda ve asiri enerjik bir golden retriever.", "intents": ["Tarcin", "dog", "golden retriever", "energetic"] },
+    { "chunk_id": "m_4", "text": "Dun gece kopegim Tarcin midesini bozdu ve hastalandi, veteriner ona ozel yagsiz bir diyet mamasi verdi.", "intents": ["Tarcin", "dog illness", "stomach problem", "veterinarian", "diet food"] },
+    { "chunk_id": "m_5", "text": "Hafta sonu uzun bir yolculuga cikiyorum. Istanbul'dan arabayla ta Antalya'ya tatile gidecegim.", "intents": ["road trip", "car", "Istanbul", "Antalya", "vacation"] },
+    { "chunk_id": "m_6", "text": "Ozel diyet mamasi cidden cok pahaliymis, kredi kartimi baya zorladi.", "intents": ["diet food", "expensive", "credit card", "money pressure"] },
+    { "chunk_id": "m_7", "text": "Kirmizi arabamin kaskosu da yeni bitti, yenilemem lazim ama bu ay cok sikisigim.", "intents": ["car", "kasko", "insurance renewal", "money pressure"] },
+    { "chunk_id": "m_8", "text": "Antalya'da hava muthis sicak ve nemli olacakmis, umarim bunalmayiz.", "intents": ["Antalya", "hot weather", "humidity"] },
+    
+    { "chunk_id": "n_1", "text": "Yazilim dunyasinda yeni AI modelleri kod yazmayi cok hizlandirdi.", "intents": ["AI models", "software", "coding"] },
+    { "chunk_id": "n_2", "text": "Aksam yemeginde makarna ve salata yemegi planliyorum, basit ve guzel.", "intents": ["dinner", "pasta", "salad"] },
+    { "chunk_id": "n_3", "text": "Kredi karti faizleri yine artmis, ekonomi pek iyi gitmiyor.", "intents": ["credit card interest", "economy"] },
+    { "chunk_id": "n_4", "text": "Kedim pamuk dun butun gun uyudu.", "intents": ["cat", "Pamuk", "sleep"] }
+  ],
+  "queries": [
+    {
+      "query": "Sence Tarcini Antalya yolculugunda arabada yanimda goturursem saglik sorunu yasar miyiz?",
+      "expected_chunks": ["m_3", "m_4", "m_5", "m_8", "m_2"],
+      "expected_intents": ["Tarcin", "dog", "Antalya", "road trip", "car", "health risk"],
+      "description": "Multi-hop testi. RAG muhtemelen 'Antalya', 'Tarcin', 'araba' kelimelerini bulur ama Tarcın'ın dun 'hastalandigi' ve ozel 'diyet' aldigi bilgisini kacirabilir cunku query'de 'hasta' kelimesi gecmiyor. Intentmind Tarcin -> Hastalandi cagrısımını yapabilmeli."
+    },
+    {
+      "query": "Bu ay neden bu kadar para sikintisi cekiyorum?",
+      "expected_chunks": ["m_6", "m_7"],
+      "expected_intents": ["money pressure", "expensive", "credit card", "insurance renewal", "kasko"],
+      "description": "Multi-hop testi. Para sikintisi -> 'kredi karti baya zorladi' (mama) ve 'kasko' yenileme. Intentmind'in bunlari getirmesi hedeflenir."
+    }
+  ]
+}

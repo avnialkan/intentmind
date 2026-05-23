@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Project specific
+memory_snapshot.json
+memory.json
+advanced_snapshot.json
+intentmind_graph.html
+benchmark_results.json
+real_world_benchmark_results*.json
+REAL_WORLD_BENCHMARK_REPORT*.md
+memory_map.html
+.pytest_cache/
+scratch_*.py
+category_news_data.csv
+mixed_domain_test.json
+scale_test.json
+/lib/
+examples/benchmarks/*_results.json
+examples/benchmarks/datasets/*.zip
+examples/benchmarks/graphrag_workspace/input/
+examples/benchmarks/graphrag_workspace/logs/
+node_modules/
+ui/node_modules/
+ui/dist/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/

@@ -1,0 +1,51 @@
+{
+  "memories": [
+    { "chunk_id": "c_graph_1", "text": "Intent graph mimarisi intentleri node, co-occurrence'ları edge olarak tutar.", "intents": ["intent graph", "intent", "node", "edge", "co-occurrence"] },
+    { "chunk_id": "c_energy_1", "text": "Energy model ile her node zamanla decay olur, enerjisi sıfırlananlar silinir.", "intents": ["energy model", "node", "decay", "forgetting"] },
+    { "chunk_id": "c_energy_2", "text": "Enerji decay işlemi zayıflama yaratarak gereksiz bilgileri öne çıkmaktan alıkoyar.", "intents": ["energy decay", "zayıflama", "noise filtering"] },
+    { "chunk_id": "c_recall_1", "text": "Semantic recall mekanizması chunk çağrışımları yaparak layer layer ilerler.", "intents": ["semantic recall", "chunk", "associative recall", "layer"] },
+    { "chunk_id": "c_cons_1", "text": "Consolidation aşamasında duplicate hafızalar merge edilir ve graph temizleme uygulanır.", "intents": ["consolidation", "duplicate", "merge", "graph cleaning"] },
+    { "chunk_id": "c_token_1", "text": "Token economy sağlamak için gereksiz context prompt içine konmaz, ucuz latency hedeflenir.", "intents": ["token economy", "prompt context", "latency", "cost"] },
+    
+    { "chunk_id": "n_random_1", "text": "Bugün hava çok güzeldi, biraz yürüyüş yaptım.", "intents": ["weather", "walking"] },
+    { "chunk_id": "n_random_2", "text": "Makarna pişirmek için suyun kaynamasını bekliyorum.", "intents": ["cooking", "pasta"] },
+    { "chunk_id": "n_random_3", "text": "Yeni bir araba modeli piyasaya çıkmış.", "intents": ["car", "new model"] },
+    
+    { "chunk_id": "n_near_1", "text": "Robot süpürgem hafıza (memory) dolu uyarısı veriyor, sanırım temizleme yapmalıyım.", "intents": ["robot vacuum", "memory full", "cleaning"] },
+    { "chunk_id": "n_near_2", "text": "Ekonomi haberlerinde bugün maliyet artışları tartışıldı, ucuz ürün bulmak zor.", "intents": ["economy news", "cost increase", "cheap products"] },
+    { "chunk_id": "n_near_3", "text": "Birleştirme (merge) operasyonu ile iki şirketin bir araya gelmesi sağlandı.", "intents": ["company merger", "merge operation"] },
+    
+    { "chunk_id": "c_shift_1", "text": "Önceden prompt builder sadece kısa cevaplar üretiyordu.", "intents": ["prompt builder", "old behavior", "short answers"] },
+    { "chunk_id": "c_shift_2", "text": "Artık prompt builder uzun ve karmaşık dokümanlar üretecek şekilde güncellendi.", "intents": ["prompt builder", "updated behavior", "long documents"] },
+    
+    { "chunk_id": "c_car_ins", "text": "Arabanın sigortasını yaptıracağım ama param yok.", "intents": ["car", "insurance", "money"] },
+    { "chunk_id": "c_car_travel", "text": "Arabayla yarın Antalya'ya gideceğim, yolculuk uzun sürecek.", "intents": ["car", "Antalya", "travel"] }
+  ],
+  "queries": [
+    {
+      "query": "Hafıza silme ve temizleme işlemleri enerji modeliyle mi yapılıyor?",
+      "expected_chunks": ["c_energy_1", "c_energy_2", "c_cons_1"],
+      "expected_intents": ["memory cleanup", "energy model", "decay", "consolidation"]
+    },
+    {
+      "query": "Token maliyeti ve ucuz latency için ne yapıyoruz?",
+      "expected_chunks": ["c_token_1"],
+      "expected_intents": ["token economy", "cost", "latency"]
+    },
+    {
+      "query": "Prompt builder son haliyle nasıl çalışıyor?",
+      "expected_chunks": ["c_shift_2"],
+      "expected_intents": ["prompt builder", "updated behavior", "long documents"]
+    },
+    {
+      "query": "Merge ve birleştirme mekanizması graph'ta nerede?",
+      "expected_chunks": ["c_cons_1", "c_graph_1"],
+      "expected_intents": ["merge", "consolidation", "intent graph", "edge"]
+    },
+    {
+      "query": "Arabamla seyahat edeceğim, sigorta ve para durumu neydi?",
+      "expected_chunks": ["c_car_ins", "c_car_travel"],
+      "expected_intents": ["car", "travel", "insurance", "money"]
+    }
+  ]
+}
