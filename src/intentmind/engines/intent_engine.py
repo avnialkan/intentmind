@@ -53,6 +53,51 @@ class IntentEngine:
 
 
     # ------------------------------------------------------------------ #
+    #  LANGUAGE-AGNOSTIC NORMALIZATION & MATCHING                         #
+    # ------------------------------------------------------------------ #
+    
+    def _soft_match_intent(self, token: str, token_emb: List[float]) -> IntentNode | None:
+        """
+        Universally matches an intent without language-specific NLP.
+        Checks for exact match (incl. aliases), then falls back to 
+        high vector similarity + lexical overlap (prefix/suffix).
+        """
+        # 1. Exact match (including aliases/lemmas via store)
+        matched = self.store.find_intent_by_label(token)
+        if matched:
+            return matched
+            
+        # 2. Vector + Prefix/Suffix match (Language Agnostic Lemmatization)
+        # If the LLM extraction is slightly off (e.g. 'arabam' instead of 'araba'),
+        # but embeddings are very close and they share a prefix, merge them!
+        matched = self.store.find_intent_by_embedding(token_emb, threshold=self.intent_similarity_threshold)
+        if matched:
+            tok_lower = token.strip().lower()
+            match_lower = matched.label.strip().lower()
+            
+            min_len = min(len(tok_lower), len(match_lower))
+            max_len = max(len(tok_lower), len(match_lower))
+            
+            if min_len >= 3:
+                prefix_match_len = 0
+                for c1, c2 in zip(tok_lower, match_lower):
+                    if c1 == c2:
+                        prefix_match_len += 1
+                    else:
+                        break
+                        
+                if max_len > 0 and (prefix_match_len / max_len) >= 0.60:
+                    # It's an alias/inflection of the matched intent!
+                    # Add it to the aliases list if it's not already there.
+                    if (tok_lower not in [a.lower() for a in matched.aliases] and 
+                        tok_lower != matched.label.lower() and 
+                        (not matched.lemma or tok_lower != matched.lemma.lower())):
+                        matched.aliases.append(token.strip())
+                    return matched
+                    
+        return None
+
+    # ------------------------------------------------------------------ #
     #  EXTRACT: language-agnostic tokenization                            #
     # ------------------------------------------------------------------ #
 
@@ -87,7 +132,7 @@ class IntentEngine:
                 concreteness += 0.25  # Massive bonus for entities/proper nouns
             
             # Graph match bonus
-            matched_intent = self.store.find_intent_by_embedding(token_emb, threshold=self.intent_similarity_threshold)
+            matched_intent = self._soft_match_intent(token, token_emb)
             graph_match = 0.30 if matched_intent else 0.0
             
             # Generic/Noise penalty
@@ -227,6 +272,9 @@ class IntentEngine:
             seen.add(key)
             embedding = self._embed_label(label)
             confidence = self._clamp_confidence(item.confidence)
+            # Check for soft match to avoid duplicating inflections
+            matched_intent = self._soft_match_intent(label, embedding)
+            
             result.append(
                 IntentCandidate(
                     text=label,
@@ -237,7 +285,8 @@ class IntentEngine:
                     role=item.role,
                     extraction_confidence=confidence,
                     quality_score=confidence,
-                    decision="create_active" if confidence >= 0.55 else "create_candidate",
+                    decision="reuse" if matched_intent else ("create_active" if confidence >= 0.55 else "create_candidate"),
+                    matched_intent_id=matched_intent.intent_id if matched_intent else None,
                     reason=item.reason or item.source,
                 )
             )

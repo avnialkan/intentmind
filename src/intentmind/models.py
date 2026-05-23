@@ -67,6 +67,8 @@ class IntentNode:
     label: str
     type: str
     embedding: List[float]
+    lemma: str = ""
+    aliases: List[str] = field(default_factory=list)
     domain: str = "general"
     energy: float = 0.50
     stability: float = 0.50

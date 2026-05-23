@@ -1,9 +1,14 @@
 from __future__ import annotations
-
+import os
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 from pathlib import Path
 from .store import MemoryStore
 from .embeddings import BaseEmbedder, FakeEmbedder
-from .engines import IntentEngine, CognitiveStateEngine, RecallEngine, EnergyEngine, ContradictionEngine
+from .engines import IntentEngine, CognitiveStateEngine, RecallEngine, EnergyEngine, ContradictionEngine, ConsolidationEngine
 from .builders import PromptBuilder
 from .persistence import JsonPersistence
 
@@ -65,6 +70,13 @@ class IntentmindMemory:
         self._recall = RecallEngine(self._store)
         self._energy = EnergyEngine(self._store)
         self._contradiction = ContradictionEngine(self._store, self.embedder)
+        
+        # Only initialize ConsolidationEngine if we have an OpenAI client
+        client = None
+        if OPENAI_AVAILABLE and os.environ.get("OPENAI_API_KEY"):
+            client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+            
+        self._consolidation = ConsolidationEngine(self._store, self.embedder, client=client, model=model)
         self._prompt = PromptBuilder()
         self._last_contradictions: list = []
 
@@ -167,7 +179,8 @@ class IntentmindMemory:
         return {**energy_stats, **cons_stats, "memory_tiers": self._tier_distribution()}
         
     def consolidate(self) -> dict:
-        return self._intent_engine.consolidate_memory()
+        facts_created = self._consolidation.consolidate()
+        return {"semantic_facts_created": facts_created}
 
     def _tier_distribution(self) -> dict:
         """Return count of chunks in each memory tier."""

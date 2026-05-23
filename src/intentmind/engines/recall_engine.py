@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .cognitive_field import CognitiveField
 
 import time
 from types import SimpleNamespace
@@ -11,30 +12,21 @@ class RecallEngine:
         self.store = store
         self.intent_match_threshold = intent_match_threshold
 
-    def activation_score(self, query_embedding, intent, cognitive_state):
-        query_similarity = cosine_similarity(query_embedding, intent.embedding)
-        edges = self.store.get_neighbors(intent.intent_id)
-        edge_energy = sum(e.energy for _, e in edges) / len(edges) if edges else 0.40
-        seconds_since = time.time() - intent.last_active
-        recency_boost = max(0.0, 1.0 - (seconds_since / 3600))
-        project_relevance = 0.50
-        base = (
-            query_similarity * 0.35
-            + intent.energy * 0.20
-            + edge_energy * 0.15
-            + recency_boost * 0.10
-            + project_relevance * 0.15
-            - intent.hub_score * 0.15
-            - intent.noise_score * 0.20
-        )
-        multipliers = {
-            "neutral": 1.00, "curious": 1.00,
-            "confident": 1.15, "skeptical": 1.10, "urgent": 1.25, "cautious": 1.20,
-        }
-        m = multipliers.get(cognitive_state.current, 1.00)
-        factor = 1.0 + ((m - 1.0) * cognitive_state.confidence)
-        return round(base * factor, 4)
 
+
+    def recall(
+        self,
+        query,
+        query_embedding,
+        cognitive_state,
+        query_intent_labels=None,
+        query_token_embeddings=None,
+        energy_engine=None,
+    ):
+        query_intent_labels = query_intent_labels or []
+        query_intent_set = set(query_intent_labels)
+        query_token_embeddings = query_token_embeddings or []
+        query_match_intent_ids = self._matching_intent_ids(query_intent_labels, query_token_embeddings)
     # Memory tier multipliers for recall scoring
     _TIER_MULTIPLIERS = {
         "working": 1.20,    # Fresh context — boosted
@@ -59,12 +51,9 @@ class RecallEngine:
         if getattr(chunk, "noise_score", 0) > 0.5:
             trust *= 0.5
             
-        # For direct matches (layer 0), query_chunk_sim is critical.
-        # For associated matches (layer > 0), the graph path is what matters!
         if layer_id > 0:
             intent_chunk_sim = cosine_similarity(intent.embedding, chunk.embedding)
             relevance = max(0.1, path_strength) * max(0.1, intent_chunk_sim)
-            # Small bonus if the query happens to match the chunk text
             relevance += max(0, query_chunk_sim) * 0.20
         else:
             relevance = max(0.1, query_chunk_sim) * max(0.1, intent_match)
@@ -76,216 +65,6 @@ class RecallEngine:
             trust
         )
         return round(base, 4)
-
-    def build_layers(
-        self,
-        query_embedding,
-        cognitive_state,
-        query_intent_labels=None,
-        query_token_embeddings=None,
-        field_seed_ids=None,
-        query_match_intent_ids=None,
-        energy_engine=None,
-    ):
-        query_intent_labels = query_intent_labels or []
-        query_intent_label_set = set(query_intent_labels)
-        query_token_embeddings = query_token_embeddings or []
-        query_match_intent_ids = set(query_match_intent_ids or self._matching_intent_ids(query_intent_labels, query_token_embeddings))
-        field_seed_ids = set(field_seed_ids or [])
-        layers = {0: [], 1: [], 2: [], 3: []}
-        seen_all = set()
-
-        # Layer 0
-        current_time = time.time()
-        for intent in self.store.intents.values():
-            if intent.state == "archived":
-                continue
-            score = self.activation_score(query_embedding, intent, cognitive_state)
-
-            # Query intent matching is resolved once up front. This avoids
-            # scanning every query-token embedding against every graph node.
-            is_embedding_match = intent.intent_id in query_match_intent_ids
-            is_label_match = intent.label in query_intent_label_set
-
-            # Partial label match: "benzin" should activate "benzin fiyatları"
-            if not is_label_match:
-                intent_words = set(intent.label.lower().split())
-                for ql in query_intent_label_set:
-                    ql_words = set(ql.lower().split())
-                    # Query label is a subset of intent label (or vice versa)
-                    if ql_words and intent_words and (ql_words.issubset(intent_words) or intent_words.issubset(ql_words)):
-                        is_label_match = True
-                        break
-
-            is_direct = is_embedding_match or is_label_match
-
-            # Conversational Priming: If intent has high residual energy from previous turns
-            is_primed = False
-            if energy_engine and not is_direct:
-                current_energy = energy_engine.get_energy(intent, current_time)
-                if current_energy >= 0.65:
-                    is_primed = True
-
-            if intent.state != "active" and not (is_direct or is_primed):
-                continue
-
-            query_sim = cosine_similarity(query_embedding, intent.embedding)
-            
-            if (score >= 0.65 and query_sim >= 0.50) or is_direct or is_primed:
-                final_score = max(score, 0.75) if is_direct else score
-                final_score = max(final_score, 0.65) if is_primed else final_score
-                reason = "direct_match" if is_direct else ("conversational_priming" if is_primed else "vector_similarity")
-                
-                layers[0].append({
-                    "intent": intent,
-                    "score": final_score,
-                    "path_strength": final_score,
-                    "called_by": None,
-                    "reason": reason,
-                    "path": [intent.label],
-                    "from_seed": intent.intent_id in field_seed_ids,
-                })
-                seen_all.add(intent.intent_id)
-
-        # Seed Layer 0 with intents from the most semantically relevant chunks (Fallback anchor)
-        top_chunks = self.store.search_chunks(query_embedding, top_k=3)
-        for chunk_score, chunk in top_chunks:
-            if chunk_score > 0.60:
-                chunk_intents = []
-                for intent_id in chunk.intent_ids:
-                    if intent_id in seen_all:
-                        continue
-                    intent = self.store.intents.get(intent_id)
-                    if not intent or intent.state not in ["active", "candidate"]:
-                        continue
-                    intent_query_similarity = cosine_similarity(query_embedding, intent.embedding)
-                    is_matched = intent.intent_id in query_match_intent_ids or intent.label in query_intent_label_set
-                    if not is_matched and intent_query_similarity < 0.50:
-                        continue
-                    chunk_intents.append((intent_query_similarity, intent))
-
-                for intent_query_similarity, intent in sorted(chunk_intents, reverse=True, key=lambda x: x[0])[:2]:
-                    layers[0].append({
-                        "intent": intent,
-                        "score": max(chunk_score, intent_query_similarity),
-                        "path_strength": max(chunk_score, intent_query_similarity),
-                        "called_by": None,
-                        "reason": "contextual_activation",
-                        "path": [intent.label],
-                        "from_seed": intent.intent_id in field_seed_ids,
-                    })
-                    seen_all.add(intent.intent_id)
-
-        layers[0] = sorted(layers[0], key=lambda x: x["score"], reverse=True)[:12]
-
-        seen_l0 = {item["intent"].intent_id for item in layers[0]}
-        
-        # Layer 1
-        for item in layers[0]:
-            intent = item["intent"]
-            for path_order, (neighbor_id, edge) in enumerate(self.store.get_neighbors(intent.intent_id)):
-                neighbor = self.store.intents.get(neighbor_id)
-                if neighbor_id in seen_l0 and neighbor and neighbor.label in query_intent_label_set:
-                    continue
-
-                # co_occurrence_link edges are noisy batch artifacts.
-                # Only traverse them if source and target intents are
-                # semantically similar (i.e. the connection is real).
-                if edge.edge_type == "co_occurrence_link":
-                    if neighbor:
-                        intent_sim = cosine_similarity(intent.embedding, neighbor.embedding)
-                        if intent_sim < 0.40:
-                            continue  # Skip — this edge is noise
-
-                if neighbor and neighbor.state == "active" and edge.energy >= 0.45 and edge.weight >= 0.40 and edge.confidence >= 0.50:
-                    edge_score = self._edge_path_score(intent, neighbor, edge)
-                    layers[1].append({
-                        "intent": neighbor, 
-                        "score": edge_score, 
-                        "path_strength": edge_score,
-                        "called_by": intent.label,
-                        "reason": "neighbor_intent_reactivation",
-                        "path": item["path"] + [neighbor.label],
-                        "edge_id": edge.edge_id,
-                        "edge_type": edge.edge_type,
-                        "edge_weight": edge.weight,
-                        "edge_confidence": edge.confidence,
-                        "edge_support": edge.support_count,
-                        "edge_state": edge.state,
-                        "edge_evidence": edge.evidence_chunk_ids[-3:],
-                        "path_order": path_order,
-                        "from_seed": item.get("from_seed", False),
-                    })
-        layers[1] = self._dedupe_layer(layers[1])[:12]
-
-        if cognitive_state.weak_echo:
-            seen_l1 = {item["intent"].intent_id for item in layers[1]}
-            seen_all = seen_l0 | seen_l1
-            
-            # Layer 2
-            for item in layers[1]:
-                if item.get("edge_type") == "weak_echo":
-                    continue # Jump Limiter!
-                intent = item["intent"]
-                for path_order, (neighbor_id, edge) in enumerate(self.store.get_neighbors(intent.intent_id)):
-                    if neighbor_id in seen_all:
-                        continue
-                    neighbor = self.store.intents.get(neighbor_id)
-                    if neighbor and neighbor.state == "active" and edge.energy >= 0.35 and edge.weight >= 0.35 and edge.confidence >= 0.45:
-                        edge_score = self._edge_path_score(intent, neighbor, edge, multiplier=0.85)
-                        layers[2].append({
-                            "intent": neighbor, 
-                            "score": edge_score, 
-                            "path_strength": edge_score,
-                            "called_by": intent.label,
-                            "reason": "weak_echo_reactivation",
-                            "path": item["path"] + [neighbor.label],
-                            "edge_id": edge.edge_id,
-                            "edge_type": edge.edge_type,
-                            "edge_weight": edge.weight,
-                            "edge_confidence": edge.confidence,
-                            "edge_support": edge.support_count,
-                            "edge_state": edge.state,
-                            "edge_evidence": edge.evidence_chunk_ids[-3:],
-                            "path_order": item.get("path_order", 0) * 100 + path_order,
-                            "from_seed": item.get("from_seed", False),
-                        })
-            layers[2] = self._dedupe_layer(layers[2])[:8]
-
-            seen_l2 = {item["intent"].intent_id for item in layers[2]}
-            seen_all = seen_all | seen_l2
-            
-            # Layer 3
-            for item in layers[2]:
-                if item.get("edge_type") == "weak_echo":
-                    continue # Jump Limiter!
-                intent = item["intent"]
-                for path_order, (neighbor_id, edge) in enumerate(self.store.get_neighbors(intent.intent_id)):
-                    if neighbor_id in seen_all:
-                        continue
-                    neighbor = self.store.intents.get(neighbor_id)
-                    if neighbor and neighbor.state == "active" and edge.energy >= 0.25 and edge.weight >= 0.25 and edge.confidence >= 0.40:
-                        edge_score = self._edge_path_score(intent, neighbor, edge, multiplier=0.65)
-                        layers[3].append({
-                            "intent": neighbor, 
-                            "score": edge_score, 
-                            "path_strength": edge_score,
-                            "called_by": intent.label,
-                            "reason": "faint_echo_reactivation",
-                            "path": item["path"] + [neighbor.label],
-                            "edge_id": edge.edge_id,
-                            "edge_type": edge.edge_type,
-                            "edge_weight": edge.weight,
-                            "edge_confidence": edge.confidence,
-                            "edge_support": edge.support_count,
-                            "edge_state": edge.state,
-                            "edge_evidence": edge.evidence_chunk_ids[-3:],
-                            "path_order": item.get("path_order", 0) * 100 + path_order,
-                            "from_seed": item.get("from_seed", False),
-                        })
-            layers[3] = self._dedupe_layer(layers[3])[:4]
-            
-        return layers
 
     def recall(
         self,
@@ -300,29 +79,36 @@ class RecallEngine:
         query_intent_set = set(query_intent_labels)
         query_token_embeddings = query_token_embeddings or []
         query_match_intent_ids = self._matching_intent_ids(query_intent_labels, query_token_embeddings)
-        layers = self.build_layers(
+        
+        field = CognitiveField(
+            self.store,
             query_embedding,
             cognitive_state,
             query_intent_labels,
-            query_token_embeddings,
-            query_match_intent_ids=query_match_intent_ids,
-            energy_engine=energy_engine,
+            query_match_intent_ids,
+            [],
+            energy_engine
         )
+        field.propagate(ticks=3)
+        layers = field.to_layers()
+        
         cognitive_field = {"seed_intents": [], "activated_intents": [], "gates": {}}
         field_seed_ids = []
         if energy_engine is not None:
             field_seed_ids = self._field_seed_ids(layers)
             if field_seed_ids:
                 cognitive_field = energy_engine.activate_field(field_seed_ids)
-                layers = self.build_layers(
+                field = CognitiveField(
+                    self.store,
                     query_embedding,
                     cognitive_state,
                     query_intent_labels,
-                    query_token_embeddings,
-                    field_seed_ids=field_seed_ids,
-                    query_match_intent_ids=query_match_intent_ids,
-                    energy_engine=energy_engine,
+                    query_match_intent_ids,
+                    field_seed_ids,
+                    energy_engine
                 )
+                field.propagate(ticks=3)
+                layers = field.to_layers()
 
         thresholds = {0: 0.25, 1: 0.38, 2: 0.35, 3: 0.45}
         candidates, rejected = [], []

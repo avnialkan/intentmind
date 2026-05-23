@@ -56,7 +56,12 @@ class MemoryStore:
     def find_intent_by_label(self, label: str):
         normalized = label.strip().lower()
         for intent in self.intents.values():
-            if intent.label.strip().lower() == normalized:
+            labels_to_check = [intent.label.strip().lower()]
+            if intent.lemma:
+                labels_to_check.append(intent.lemma.strip().lower())
+            labels_to_check.extend([a.strip().lower() for a in intent.aliases])
+            
+            if normalized in labels_to_check:
                 return intent
         return None
 
@@ -89,25 +94,26 @@ class MemoryStore:
                 edge.co_activation_count += 1
                 edge.weight = min(1.0, max(edge.weight, weight) + 0.02)
                 edge.energy = min(1.0, edge.energy + 0.03)
-                edge.confidence = self._edge_confidence(edge.weight, edge.support_count, edge.energy)
+                edge.confidence = self._edge_confidence(edge)
                 edge.state = state or self._edge_state(edge.confidence, edge.support_count)
                 self._invalidate_neighbor_cache()
                 return edge
         edge_id = f"edge_{uuid.uuid4().hex[:8]}"
         evidence = [evidence_chunk_id] if evidence_chunk_id else []
         support_count = max(1, len(evidence))
-        confidence = self._edge_confidence(weight, support_count, 0.50)
         edge = IntentEdge(
             edge_id=edge_id,
             source_id=source_id,
             target_id=target_id,
             edge_type=edge_type,
             weight=weight,
-            confidence=confidence,
+            confidence=0.0, # calculated below
             support_count=support_count,
             evidence_chunk_ids=evidence,
-            state=state or self._edge_state(confidence, support_count),
+            state="candidate" # defaults to candidate
         )
+        edge.confidence = self._edge_confidence(edge)
+        edge.state = state or self._edge_state(edge.confidence, edge.support_count)
         self.edges[edge_id] = edge
         self._invalidate_neighbor_cache()
         return edge
@@ -123,14 +129,34 @@ class MemoryStore:
             edge.evidence_chunk_ids = edge.evidence_chunk_ids[-20:]
         return True
 
-    def _edge_confidence(self, weight: float, support_count: int, energy: float) -> float:
-        support_bonus = min(0.25, max(0, support_count - 1) * 0.08)
-        return round(min(1.0, weight * 0.70 + energy * 0.15 + support_bonus), 4)
+    def _edge_confidence(self, edge: IntentEdge) -> float:
+        # co_occurrence_frequency
+        freq_factor = min(1.0, 0.3 + (edge.support_count * 0.15))
+        
+        # semantic_consistency
+        sem_factor = max(0.1, edge.weight)
+        
+        # temporal recurrence
+        temp_factor = max(0.1, edge.energy)
+        
+        # domain alignment
+        domain_factor = 1.0
+        source = self.intents.get(edge.source_id)
+        target = self.intents.get(edge.target_id)
+        if source and target and source.domain != "general" and target.domain != "general":
+            if source.domain != target.domain:
+                domain_factor = 0.6
+                
+        base_confidence = freq_factor * sem_factor * temp_factor * domain_factor
+        return round(min(1.0, base_confidence), 4)
 
     def _edge_state(self, confidence: float, support_count: int) -> str:
-        if confidence >= 0.72 or (support_count >= 2 and confidence >= 0.60):
+        # Friend's feedback: "edge hemen oluşmamalı. ilk karşılaşma: candidate edge."
+        if support_count <= 1:
+            return "candidate"
+        if confidence >= 0.65 and support_count >= 3:
             return "active"
-        if confidence >= 0.50:
+        if confidence >= 0.40 and support_count >= 2:
             return "weak"
         return "candidate"
 

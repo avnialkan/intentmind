@@ -20,7 +20,7 @@ If you are building an autonomous system or an AI agent that lives for more than
 
 ## 🌟 The Solution: Why Intentmind?
 
-Intentmind doesn't just store documents; it builds a **dynamic associative memory graph with energy-based activation, decay, reinforcement, and traceable recall paths**. 
+Intentmind doesn't just store documents; it builds a **dynamic associative memory graph with energy-based activation, decay, reinforcement, and traceable recall paths**. It acts as a living, breathing cognitive architecture.
 
 ### 1. Associative Recall (Semantic Drift Recovery)
 When data is ingested, Intentmind extracts core concepts (nodes) and connects them (edges). When a user mentions a concept, the system doesn't just do a vector search—it **traverses the graph**. 
@@ -32,7 +32,16 @@ Intentmind naturally traverses the graph from `car` to `insurance`, pulling in t
 ### 2. Biological Forgetting (Energy & Decay)
 Intentmind introduces an `Energy` system. Every time a memory is recalled, its connection strengthens (like human synapses). Unused, irrelevant, or noisy memories slowly decay and are eventually "forgotten" (archived). This prevents context bloat and ensures your agent only remembers what actually matters.
 
-### 3. Cognitive State Modulation
+### 3. Language-Agnostic Root Intelligence (Lemmatization)
+To prevent "Intent Explosion" (e.g. `car`, `cars`, `my car` all becoming separate nodes), Intentmind uses a proprietary **Language-Agnostic Soft-Match Algorithm**. It combines High Vector Similarity (>82%) with Lexical Overlap (Prefix-matching >60%) to organically merge inflections and typos into aliases of a single root intent, without needing language-specific NLP libraries (like NLTK or Zemberek).
+
+### 4. Dynamic Edge Confidence (State Machine)
+Graphs easily turn into useless spaghetti if edges are formed too quickly. Intentmind features a rigorous **Edge State Machine** (`Candidate` -> `Weak` -> `Active`). Edges are evaluated based on Co-occurrence Frequency, Semantic Consistency, Temporal Recurrence, and Domain Alignment. A passing mention creates a mere "Candidate" edge which doesn't pollute recall until it is corroborated!
+
+### 5. Semantic Consolidation & Contradiction Engine
+Intentmind's background `tick()` lifecycle actively monitors the `episodic` memory pool. As patterns emerge (e.g. "User drank espresso", "User hates filter coffee"), the **Consolidation Engine** automatically uses an LLM to synthesize **Semantic Facts** ("User likes espresso, dislikes filter coffee") while archiving the raw events. If a user later says "I actually love filter coffee now," the **Contradiction Engine** catches the conflict, decays the old semantic fact, and solidifies the new truth.
+
+### 6. Cognitive State Modulation
 Previously known as the "Emotion Engine", this system features an **Adaptive Urgency Matrix**. It dynamically scores the user's current query for stress, urgency, or sentiment, and applies **retrieval priority modulation**. A highly urgent query immediately surfaces hard, high-confidence facts, while a casual conversational query triggers broader, associative exploration.
 
 ---
