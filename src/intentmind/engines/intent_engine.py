@@ -728,6 +728,7 @@ class IntentEngine:
                 if iid not in existing_chunk.intent_ids:
                     existing_chunk.intent_ids.append(iid)
             self._create_edges_from_llm_or_heuristic(intent_ids, evidence_chunk_id=existing_chunk.chunk_id)
+            self._create_contextual_edges(intent_ids, evidence_chunk_id=existing_chunk.chunk_id)
             return existing_chunk
 
         chunk = self.store.add_chunk(
@@ -735,7 +736,33 @@ class IntentEngine:
             intent_ids=intent_ids, source=source, chunk_id=chunk_id,
         )
         self._create_edges_from_llm_or_heuristic(intent_ids, evidence_chunk_id=chunk.chunk_id)
+        self._create_contextual_edges(intent_ids, evidence_chunk_id=chunk.chunk_id)
         return chunk
+
+    def _create_contextual_edges(self, new_intent_ids: List[str], evidence_chunk_id: str):
+        """
+        Create cross-chunk edges. Links the newly extracted intents to the most
+        active recent intents from the conversation context. This prevents the
+        graph from fracturing into disconnected message islands.
+        """
+        if not new_intent_ids:
+            return
+            
+        recent_context = [
+            intent for intent in self.store.intents.values()
+            if intent.intent_id not in new_intent_ids and intent.energy >= 0.50
+        ]
+        recent_context.sort(key=lambda i: i.energy, reverse=True)
+        top_context = recent_context[:3]  # Only connect to the strongest recent context
+        
+        for new_id in new_intent_ids:
+            for ctx_intent in top_context:
+                self.store.add_edge(
+                    new_id, ctx_intent.intent_id,
+                    edge_type="temporal_link",
+                    weight=0.55,
+                    evidence_chunk_id=evidence_chunk_id
+                )
 
     def _reinforce_intent(self, intent, candidate: IntentCandidate, now: float, boost: float):
         intent.source_count += 1
