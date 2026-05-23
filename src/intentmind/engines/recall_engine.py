@@ -51,21 +51,27 @@ class RecallEngine:
         contextual_relevance = 0.50 # baseline project relevance
         reinforcement_bonus = min(0.10, chunk.reinforcement_count * 0.01)
         
-        # Memory tier multiplier
+        # Memory tier multiplier (importance)
         tier_mult = self._TIER_MULTIPLIERS.get(
             getattr(chunk, "memory_tier", "episodic"), 1.00
         )
         
+        # Trust/Reliability factor
+        trust = 1.0 + min(0.5, chunk.reinforcement_count * 0.05) + (chunk.feedback_score * 0.1)
+        if getattr(chunk, "noise_score", 0) > 0.5:
+            trust *= 0.5
+            
+        # Multiplicative Cognitive Scoring
+        # chunk_score = intent_energy × chunk_relevance × recency × importance × trust
+        # Note: intent_match here carries both intent_energy and edge_weight (path_strength)
         base = (
-            query_chunk_sim * 0.35
-            + intent_match * 0.30
-            + contextual_relevance * 0.20
-            + novelty_score * 0.10
-            + chunk.feedback_score * 0.05
-            + reinforcement_bonus
-            - chunk.noise_score * 0.20
+            max(0.1, query_chunk_sim) * 
+            max(0.1, intent_match) * 
+            max(0.5, novelty_score) * 
+            tier_mult * 
+            trust
         )
-        return round(base * tier_mult, 4)
+        return round(base, 4)
 
     def build_layers(
         self,

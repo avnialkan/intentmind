@@ -167,9 +167,24 @@ class PromptBuilder:
             intent = item["intent"]
             label = intent.label if hasattr(intent, "label") else str(intent)
             domain = getattr(intent, "domain", "general")
-            text = self._compress(item["chunk"].text, max_len=400)
             score = round(item["score"], 2)
-            layer = item.get("layer", "?")
+            layer = item.get("layer", 0)
+            
+            # Cognitive Token Budgeting: Length depends on the layer (Ring)
+            raw_text = item["chunk"].text
+            if layer == 0:
+                # Ring 0 / Direct: High budget
+                text = self._compress(raw_text, max_len=600)
+            elif layer == 1:
+                # Ring 1 / Strong Neighbors: Medium budget
+                text = self._compress(raw_text, max_len=200)
+            elif layer == 2:
+                # Ring 2 / Weak Associative: Low budget (just facts/summaries)
+                text = self._compress(raw_text, max_len=80)
+            else:
+                # Ring 3 / Echo: Signal only
+                text = ""
+
             called_by = item.get("called_by")
             edge_type = item.get("edge_type", "")
             reason = item.get("reason", "")
@@ -201,7 +216,13 @@ class PromptBuilder:
             lines.append(f"\n▸ {topic}{domain_str}:")
             for m in items[:5]:
                 source_tag = f"[{m['source']}]" if m['source'] != 'chat' else ""
-                lines.append(f'  [{m["layer"]}, {m["score"]}]{m["via"]}{" " + source_tag if source_tag else ""} "{m["text"]}"')
+                layer_tag = f"[{m['layer']}, {m['score']}]"
+                
+                # If Ring 3, we don't output text, just the signal.
+                if m["text"]:
+                    lines.append(f'  {layer_tag}{m["via"]}{" " + source_tag if source_tag else ""} "{m["text"]}"')
+                else:
+                    lines.append(f'  {layer_tag}{m["via"]}{" " + source_tag if source_tag else ""} (activation signal only)')
 
         return "\n".join(lines)
 
