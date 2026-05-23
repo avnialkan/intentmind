@@ -833,13 +833,14 @@ class IntentEngine:
         return "co_occurrence_link", 0.62
 
     def _create_edges_from_llm_or_heuristic(self, intent_ids: List[str], evidence_chunk_id: str | None = None):
-        """Use LLM-extracted typed edges when available, fall back to heuristic."""
+        """Use LLM-extracted typed edges to upgrade baseline heuristic edges."""
         llm_edges = self._last_llm_edges
         self._last_llm_edges = []  # Consume once
 
+        # 1. ALWAYS create baseline heuristic edges first so no intent is isolated
+        self.create_edges(intent_ids, evidence_chunk_id=evidence_chunk_id)
+
         if not llm_edges:
-            # Fallback to heuristic
-            self.create_edges(intent_ids, evidence_chunk_id=evidence_chunk_id)
             return
 
         # Build label→intent_id lookup
@@ -911,9 +912,8 @@ class IntentEngine:
                 sim = cosine_similarity(a.embedding, b.embedding)
 
                 # Gate: Don't create edges between semantically unrelated intents.
-                # This is the #1 source of recall noise — batch co-occurrence
-                # creates false connections (e.g. "benzin" ↔ "Bursaspor").
-                if sim < 0.35:
+                # Relax this gate if the chunk is very small (they clearly belong together)
+                if len(intent_ids) > 4 and sim < 0.35:
                     continue
 
                 hub_overlap = max(a.hub_score, b.hub_score)
