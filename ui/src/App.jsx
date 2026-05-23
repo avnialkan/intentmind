@@ -87,46 +87,301 @@ function StatCard({ title, value, unit, icon, color }) {
   );
 }
 
-function FieldMonitor({ nodes, activeIds }) {
-  const sorted = [...nodes].sort((a, b) => b.energy - a.energy).slice(0, 20);
+function CognitiveGraph({ nodes, activeIds }) {
+  const canvasRef = useRef(null);
+  const simRef = useRef({ nodes: [], edges: [], hovered: null, dragging: null });
+  const animRef = useRef(null);
+
+  // Build simulation data whenever nodes change
+  useEffect(() => {
+    const sim = simRef.current;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const W = canvas.width = canvas.offsetWidth * 2;
+    const H = canvas.height = canvas.offsetHeight * 2;
+    const cx = W / 2, cy = H / 2;
+
+    // Preserve positions for existing nodes
+    const oldPositions = {};
+    sim.nodes.forEach(n => { oldPositions[n.id] = { x: n.x, y: n.y, vx: n.vx, vy: n.vy }; });
+
+    // Build node list
+    const simNodes = nodes.map((n, i) => {
+      const old = oldPositions[n.id];
+      const angle = (i / Math.max(nodes.length, 1)) * Math.PI * 2;
+      return {
+        ...n,
+        x: old ? old.x : cx + Math.cos(angle) * (H * 0.25) + (Math.random() - 0.5) * 40,
+        y: old ? old.y : cy + Math.sin(angle) * (H * 0.25) + (Math.random() - 0.5) * 40,
+        vx: old ? old.vx * 0.5 : 0,
+        vy: old ? old.vy * 0.5 : 0,
+        radius: Math.max(12, Math.min(36, n.energy * 40)) * 2,
+        isActive: activeIds.includes(n.id),
+      };
+    });
+
+    // Build edge list from node edge data
+    const simEdges = [];
+    const nodeMap = {};
+    simNodes.forEach(n => { nodeMap[n.id] = n; });
+    nodes.forEach(n => {
+      (n.edges || []).forEach(e => {
+        if (nodeMap[n.id] && nodeMap[e.target]) {
+          simEdges.push({
+            source: nodeMap[n.id],
+            target: nodeMap[e.target],
+            weight: e.weight || 0.5,
+            confidence: e.confidence || 0.5,
+          });
+        }
+      });
+    });
+
+    sim.nodes = simNodes;
+    sim.edges = simEdges;
+    sim.W = W;
+    sim.H = H;
+  }, [nodes, activeIds]);
+
+  // Force simulation + render loop
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const sim = simRef.current;
+
+    function tick() {
+      const { nodes: sn, edges: se, W, H } = sim;
+      if (!sn.length) {
+        // Draw empty state
+        ctx.clearRect(0, 0, W || 1, H || 1);
+        ctx.fillStyle = "rgba(148,163,184,0.3)";
+        ctx.font = "24px Inter, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Send a message to build the graph", (W || 600) / 2, (H || 600) / 2);
+        animRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      const cx = W / 2, cy = H / 2;
+
+      // --- Forces ---
+      // Center gravity
+      sn.forEach(n => {
+        n.vx += (cx - n.x) * 0.0008;
+        n.vy += (cy - n.y) * 0.0008;
+      });
+
+      // Repulsion
+      for (let i = 0; i < sn.length; i++) {
+        for (let j = i + 1; j < sn.length; j++) {
+          let dx = sn[j].x - sn[i].x;
+          let dy = sn[j].y - sn[i].y;
+          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          let force = 18000 / (dist * dist);
+          let fx = (dx / dist) * force;
+          let fy = (dy / dist) * force;
+          sn[i].vx -= fx; sn[i].vy -= fy;
+          sn[j].vx += fx; sn[j].vy += fy;
+        }
+      }
+
+      // Spring (edges)
+      se.forEach(e => {
+        let dx = e.target.x - e.source.x;
+        let dy = e.target.y - e.source.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        let ideal = 120 + (1 - e.weight) * 80;
+        let force = (dist - ideal) * 0.004 * e.weight;
+        let fx = (dx / dist) * force;
+        let fy = (dy / dist) * force;
+        e.source.vx += fx; e.source.vy += fy;
+        e.target.vx -= fx; e.target.vy -= fy;
+      });
+
+      // Velocity & position update
+      sn.forEach(n => {
+        if (sim.dragging === n.id) return;
+        n.vx *= 0.88;
+        n.vy *= 0.88;
+        n.x += n.vx;
+        n.y += n.vy;
+        // Boundary
+        n.x = Math.max(n.radius, Math.min(W - n.radius, n.x));
+        n.y = Math.max(n.radius, Math.min(H - n.radius, n.y));
+      });
+
+      // --- Render ---
+      ctx.clearRect(0, 0, W, H);
+
+      // Edges
+      se.forEach(e => {
+        const srcActive = e.source.isActive;
+        const tgtActive = e.target.isActive;
+        const highlight = srcActive && tgtActive;
+        ctx.beginPath();
+        ctx.moveTo(e.source.x, e.source.y);
+        ctx.lineTo(e.target.x, e.target.y);
+        ctx.strokeStyle = highlight
+          ? `rgba(99, 102, 241, ${0.4 + e.confidence * 0.5})`
+          : `rgba(148, 163, 184, ${0.08 + e.confidence * 0.15})`;
+        ctx.lineWidth = highlight ? (2 + e.weight * 4) : (1 + e.weight * 2);
+        ctx.stroke();
+
+        // Weight label on highlighted edges
+        if (highlight) {
+          const mx = (e.source.x + e.target.x) / 2;
+          const my = (e.source.y + e.target.y) / 2;
+          ctx.fillStyle = "rgba(99, 102, 241, 0.7)";
+          ctx.font = "18px monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(e.weight.toFixed(2), mx, my - 6);
+        }
+      });
+
+      // Nodes
+      sn.forEach(n => {
+        const isHovered = sim.hovered === n.id;
+
+        // Glow
+        if (n.isActive || isHovered) {
+          const grd = ctx.createRadialGradient(n.x, n.y, n.radius * 0.5, n.x, n.y, n.radius * 2.5);
+          const glowColor = n.isActive ? "99, 102, 241" : "168, 85, 247";
+          grd.addColorStop(0, `rgba(${glowColor}, 0.3)`);
+          grd.addColorStop(1, `rgba(${glowColor}, 0)`);
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, n.radius * 2.5, 0, Math.PI * 2);
+          ctx.fillStyle = grd;
+          ctx.fill();
+        }
+
+        // Circle
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+        if (n.isActive) {
+          const grd = ctx.createRadialGradient(n.x - n.radius * 0.3, n.y - n.radius * 0.3, 0, n.x, n.y, n.radius);
+          grd.addColorStop(0, "#818cf8");
+          grd.addColorStop(1, "#4f46e5");
+          ctx.fillStyle = grd;
+        } else {
+          ctx.fillStyle = n.energy > 0.5 ? `rgba(16, 185, 129, ${0.4 + n.energy * 0.5})`
+            : `rgba(148, 163, 184, ${0.15 + n.energy * 0.3})`;
+        }
+        ctx.fill();
+        ctx.strokeStyle = n.isActive ? "rgba(129, 140, 248, 0.6)" : "rgba(255,255,255,0.1)";
+        ctx.lineWidth = isHovered ? 4 : 2;
+        ctx.stroke();
+
+        // Label
+        const label = n.id.length > 18 ? n.id.slice(0, 16) + "…" : n.id;
+        ctx.font = `${n.isActive ? "bold " : ""}${n.isActive ? 22 : 18}px Inter, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.fillStyle = n.isActive ? "#f8fafc" : `rgba(248, 250, 252, ${0.5 + n.energy * 0.4})`;
+        ctx.fillText(label, n.x, n.y + n.radius + 22);
+
+        // Energy value
+        ctx.font = "16px monospace";
+        ctx.fillStyle = "rgba(148, 163, 184, 0.6)";
+        ctx.fillText(n.energy.toFixed(2), n.x, n.y + 6);
+      });
+
+      // Tooltip for hovered node
+      if (sim.hovered) {
+        const hn = sn.find(n => n.id === sim.hovered);
+        if (hn) {
+          const lines = [
+            hn.id,
+            `Energy: ${hn.energy.toFixed(3)}`,
+            `Hits: ${hn.hitCount || 0}`,
+            `Edges: ${(hn.edges || []).length}`,
+          ];
+          const tw = 280, th = lines.length * 30 + 16;
+          let tx = hn.x + hn.radius + 20, ty = hn.y - th / 2;
+          if (tx + tw > W) tx = hn.x - hn.radius - tw - 20;
+          if (ty < 10) ty = 10;
+          ctx.fillStyle = "rgba(10, 10, 30, 0.92)";
+          ctx.strokeStyle = "rgba(99, 102, 241, 0.4)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.roundRect(tx, ty, tw, th, 12);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#f8fafc";
+          ctx.font = "bold 20px Inter, sans-serif";
+          ctx.textAlign = "left";
+          ctx.fillText(lines[0], tx + 16, ty + 28);
+          ctx.font = "18px monospace";
+          ctx.fillStyle = "#94a3b8";
+          lines.slice(1).forEach((l, i) => {
+            ctx.fillText(l, tx + 16, ty + 28 + (i + 1) * 26);
+          });
+        }
+      }
+
+      animRef.current = requestAnimationFrame(tick);
+    }
+
+    animRef.current = requestAnimationFrame(tick);
+    return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
+  }, []);
+
+  // Mouse interaction
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const sim = simRef.current;
+    const scale = 2; // canvas pixel ratio
+
+    function getNode(e) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * scale;
+      const my = (e.clientY - rect.top) * scale;
+      for (const n of sim.nodes) {
+        const dx = mx - n.x, dy = my - n.y;
+        if (dx * dx + dy * dy < (n.radius + 10) * (n.radius + 10)) return n;
+      }
+      return null;
+    }
+
+    function onMove(e) {
+      const n = getNode(e);
+      sim.hovered = n ? n.id : null;
+      canvas.style.cursor = n ? "grab" : "default";
+      if (sim.dragging) {
+        const rect = canvas.getBoundingClientRect();
+        const dn = sim.nodes.find(nd => nd.id === sim.dragging);
+        if (dn) {
+          dn.x = (e.clientX - rect.left) * scale;
+          dn.y = (e.clientY - rect.top) * scale;
+          dn.vx = 0; dn.vy = 0;
+        }
+      }
+    }
+    function onDown(e) {
+      const n = getNode(e);
+      if (n) { sim.dragging = n.id; canvas.style.cursor = "grabbing"; }
+    }
+    function onUp() { sim.dragging = null; }
+
+    canvas.addEventListener("mousemove", onMove);
+    canvas.addEventListener("mousedown", onDown);
+    canvas.addEventListener("mouseup", onUp);
+    canvas.addEventListener("mouseleave", onUp);
+    return () => {
+      canvas.removeEventListener("mousemove", onMove);
+      canvas.removeEventListener("mousedown", onDown);
+      canvas.removeEventListener("mouseup", onUp);
+      canvas.removeEventListener("mouseleave", onUp);
+    };
+  }, []);
 
   return (
-    <GlassPanel style={{ display: "flex", flexDirection: "column", height: "100%", padding: "20px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+    <GlassPanel style={{ display: "flex", flexDirection: "column", height: "100%", padding: 0, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "16px 20px", borderBottom: `1px solid ${COLORS.glassBorder}` }}>
         <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.accent, boxShadow: `0 0 10px ${COLORS.accent}` }} />
         <span style={{ fontSize: 11, color: COLORS.text, letterSpacing: 2, fontWeight: 600 }}>COGNITIVE GRAPH</span>
+        <span style={{ fontSize: 10, color: COLORS.muted, marginLeft: "auto" }}>{nodes.length} nodes</span>
       </div>
-      
-      <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, paddingRight: 4 }} className="hide-scrollbar">
-        {sorted.map(({ id, energy, hitCount, intent_id }) => {
-          const isActive = activeIds.includes(id);
-          return (
-            <div key={intent_id} style={{
-              display: "flex", flexDirection: "column", gap: 6,
-              opacity: energy < 0.05 ? 0.4 : 1,
-              transition: "all 0.5s cubic-bezier(0.4, 0, 0.2, 1)",
-              transform: isActive ? "translateX(4px)" : "translateX(0)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{
-                  fontSize: 12, color: isActive ? COLORS.text : COLORS.muted,
-                  fontWeight: isActive ? 600 : 400,
-                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160,
-                  textShadow: isActive ? `0 0 8px rgba(255,255,255,0.3)` : "none"
-                }} title={id}>
-                  {id}
-                </span>
-                {hitCount > 0 && (
-                  <span style={{ fontSize: 10, color: COLORS.accent2, fontWeight: 600, background: "rgba(168, 85, 247, 0.1)", padding: "2px 6px", borderRadius: 10 }}>
-                    ×{hitCount}
-                  </span>
-                )}
-              </div>
-              <EnergyBar energy={energy} />
-            </div>
-          );
-        })}
-      </div>
+      <canvas ref={canvasRef} style={{ flex: 1, width: "100%", display: "block" }} />
     </GlassPanel>
   );
 }
@@ -347,8 +602,8 @@ export default function App() {
       }}>
         
         {/* LEFT COLUMN: Cognitive Graph */}
-        <div style={{ flex: "0 0 320px", display: "flex", flexDirection: "column", gap: 24 }}>
-          <FieldMonitor nodes={field.nodes} activeIds={field.active_ids} />
+        <div style={{ flex: "0 0 480px", display: "flex", flexDirection: "column", gap: 24 }}>
+          <CognitiveGraph nodes={field.nodes} activeIds={field.active_ids} />
         </div>
 
         {/* MIDDLE COLUMN: Chat Interface */}
@@ -369,7 +624,7 @@ export default function App() {
               }} />
               <div>
                 <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: 0.5, color: COLORS.text }}>Intentmind Core</div>
-                <div style={{ fontSize: 11, color: COLORS.muted }}>v0.1.2 (Universal Model)</div>
+                <div style={{ fontSize: 11, color: COLORS.muted }}>v0.3.0 (Cognitive Layer)</div>
               </div>
             </div>
           </div>
