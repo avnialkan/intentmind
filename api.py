@@ -121,9 +121,8 @@ def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int
         for label in item.get("path", []):
             add_label(label, active=is_direct and label == item.get("intent"))
 
-    if not node_order:
-        for item in cog_field.get("activated_intents", [])[:max_nodes]:
-            add_intent_id(item.get("intent_id"), active=item.get("role") == "seed")
+    for item in cog_field.get("activated_intents", [])[:max_nodes]:
+        add_intent_id(item.get("intent_id"), active=item.get("role") == "seed")
 
     relevant = set(node_order[:max_nodes])
     nodes = []
