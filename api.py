@@ -195,7 +195,7 @@ async def chat(req: ChatRequest):
 
         # Query first. Chat text is short-term context; it should not create
         # long-term graph nodes unless explicitly enabled by env.
-        mem_result = memory.query(memory_query)
+        mem_result = memory.query(user_query=user_msg, context_text=memory_query)
         # Use the prompt already built by runtime.query() — it has access
         # to the raw recall_result (direct_memories, associated_memories etc.)
         # which PromptBuilder needs.  Re-creating a PromptBuilder here and

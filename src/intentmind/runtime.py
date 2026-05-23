@@ -76,7 +76,7 @@ class IntentmindMemory:
         self._last_contradictions = self._contradiction.check_and_resolve(chunk)
         return chunk.chunk_id
 
-    def query(self, user_query: str) -> dict:
+    def query(self, user_query: str, context_text: str | None = None) -> dict:
         import time as _time
 
         t0 = _time.perf_counter()
@@ -86,7 +86,7 @@ class IntentmindMemory:
         cognitive_state = self._cognitive_state.detect(query_emb)
         t_state = _time.perf_counter()
 
-        query_token_embeddings = self._intent_engine.extract_query_intents(user_query)
+        query_token_embeddings = self._intent_engine.extract_query_intents(context_text or user_query)
         t_extract = _time.perf_counter()
 
         query_intent_labels = [label for label, _embedding in query_token_embeddings]
