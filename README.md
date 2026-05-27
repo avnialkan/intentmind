@@ -6,7 +6,7 @@ colorTo: blue
 sdk: docker
 pinned: false
 app_port: 7860
-short_description: A real-time cognitive graph engine that visually maps LLM interactions and semantic leaps.
+short_description: Graph-based long-term memory for AI agents.
 ---
 # Intentmind: Graph-based long-term memory for AI agents 🧠
 
