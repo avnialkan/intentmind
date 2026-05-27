@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from openai import OpenAI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 LOCAL_SRC = PROJECT_ROOT / "src"
@@ -512,5 +514,18 @@ async def chat(req: ChatRequest):
         fallback_stats = {"total_nodes": 0, "total_edges": 0, "avg_energy": 0.0, "total_chunks": 0}
         return {"response": f"API CRASH: {str(e)}", "field": {"nodes": [], "active_ids": [], "stats": fallback_stats}}
 
+ui_dist = PROJECT_ROOT / "ui" / "dist"
+if ui_dist.exists():
+    app.mount("/assets", StaticFiles(directory=ui_dist / "assets"), name="assets")
+    
+    @app.get("/{full_path:path}")
+    async def serve_ui(full_path: str):
+        if full_path.startswith("api/"):
+            return {"error": "Not found"}
+        file_path = ui_dist / full_path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(ui_dist / "index.html")
+
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="127.0.0.1", port=API_PORT, reload=API_RELOAD)
+    uvicorn.run("api:app", host="0.0.0.0", port=API_PORT, reload=API_RELOAD)

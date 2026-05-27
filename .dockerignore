@@ -1,0 +1,7 @@
+.git
+.env
+__pycache__
+*.pyc
+ui/node_modules
+ui/dist
+memory.json
