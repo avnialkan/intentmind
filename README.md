@@ -1,3 +1,12 @@
+---
+title: Intentmind
+emoji: 🧠
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+pinned: false
+app_port: 7860
+---
 # Intentmind: Graph-based long-term memory for AI agents 🧠
 
 **Associative recall, memory decay, contradiction handling, and traceable context retrieval for persistent AI systems.**
