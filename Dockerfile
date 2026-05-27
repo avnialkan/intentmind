@@ -1,15 +1,20 @@
 FROM python:3.10
 
-# Node.js kurulumu (Vite/React arayüzünü derlemek için)
+# Node.js kurulumu
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
     apt-get install -y nodejs
 
+# HF Spaces güvenlik gereksinimi: Non-root kullanıcı oluşturma
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
+
 WORKDIR /app
 
-# Proje dosyalarını kopyala
-COPY . /app
+# Proje dosyalarını kopyala ve sahipliğini user yap
+COPY --chown=user . /app
 
-# Python bağımlılıklarını kur (all flagi ile faiss, openai vs.)
+# Python bağımlılıklarını kur
 RUN pip install --no-cache-dir -e .[all]
 RUN pip install --no-cache-dir uvicorn fastapi
 
