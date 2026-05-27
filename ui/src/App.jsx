@@ -2,32 +2,29 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── STYLES & THEMING ─────────────────────────────────────────────────────────
 const COLORS = {
-  bg1: "#090914",
-  bg2: "#14142b",
-  bg3: "#0a0a1f",
-  glass: "rgba(20, 20, 35, 0.4)",
-  glassBorder: "rgba(255, 255, 255, 0.08)",
-  accent: "#6366f1",    // Indigo
-  accentGlow: "rgba(99, 102, 241, 0.5)",
-  accent2: "#a855f7",   // Purple
-  text: "#f8fafc",
-  muted: "#94a3b8",
-  green: "#10b981",
+  bg1: "#212121",
+  bg2: "#171717",
+  bg3: "#2f2f2f",
+  panelBg: "#2f2f2f",
+  border: "#424242",
+  accent: "#10a37f",
+  accentGlow: "rgba(16, 163, 127, 0.2)",
+  accent2: "#8e8ea0",
+  text: "#ececec",
+  muted: "#9b9b9b",
+  green: "#10a37f",
   orange: "#f59e0b",
   red: "#ef4444",
 };
 
 // ─── COMPONENTS ───────────────────────────────────────────────────────────────
 
-function GlassPanel({ children, style }) {
+function ProPanel({ children, style }) {
   return (
     <div style={{
-      background: COLORS.glass,
-      backdropFilter: "blur(16px)",
-      WebkitBackdropFilter: "blur(16px)",
-      border: `1px solid ${COLORS.glassBorder}`,
-      borderRadius: "20px",
-      boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3)",
+      background: COLORS.bg1,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: "12px",
       ...style
     }}>
       {children}
@@ -60,29 +57,22 @@ function EnergyBar({ energy }) {
 function StatCard({ title, value, unit, icon, color }) {
   return (
     <div style={{
-      background: "rgba(255,255,255,0.02)",
-      border: `1px solid rgba(255,255,255,0.05)`,
-      borderRadius: "16px",
+      background: COLORS.panelBg,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: "8px",
       padding: "16px",
       display: "flex",
       flexDirection: "column",
       gap: 8,
-      position: "relative",
-      overflow: "hidden"
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 11, color: COLORS.muted, fontWeight: 500, letterSpacing: 1 }}>{title}</span>
+        <span style={{ fontSize: 11, color: COLORS.muted, fontWeight: 600, letterSpacing: 0.5 }}>{title}</span>
         <span style={{ fontSize: 14 }}>{icon}</span>
       </div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-        <span style={{ fontSize: 28, fontWeight: 700, color: COLORS.text, fontFamily: "monospace" }}>{value}</span>
+        <span style={{ fontSize: 24, fontWeight: 600, color: COLORS.text, fontFamily: "system-ui, sans-serif" }}>{value}</span>
         {unit && <span style={{ fontSize: 12, color: COLORS.muted }}>{unit}</span>}
       </div>
-      {/* Decorative Glow */}
-      <div style={{
-        position: "absolute", bottom: -20, right: -20, width: 60, height: 60,
-        background: color, filter: "blur(40px)", opacity: 0.2
-      }} />
     </div>
   );
 }
@@ -245,7 +235,7 @@ function CognitiveGraph({ nodes, activeIds }) {
         // Glow
         if (n.isActive || isHovered) {
           const grd = ctx.createRadialGradient(n.x, n.y, n.radius * 0.5, n.x, n.y, n.radius * 2.5);
-          const glowColor = n.isActive ? "99, 102, 241" : "168, 85, 247";
+          const glowColor = n.isActive ? "16, 163, 127" : "142, 142, 160";
           grd.addColorStop(0, `rgba(${glowColor}, 0.3)`);
           grd.addColorStop(1, `rgba(${glowColor}, 0)`);
           ctx.beginPath();
@@ -259,8 +249,8 @@ function CognitiveGraph({ nodes, activeIds }) {
         ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
         if (n.isActive) {
           const grd = ctx.createRadialGradient(n.x - n.radius * 0.3, n.y - n.radius * 0.3, 0, n.x, n.y, n.radius);
-          grd.addColorStop(0, "#818cf8");
-          grd.addColorStop(1, "#4f46e5");
+          grd.addColorStop(0, "#10a37f");
+          grd.addColorStop(1, "#10a37f");
           ctx.fillStyle = grd;
         } else {
           ctx.fillStyle = n.energy > 0.5 ? `rgba(16, 185, 129, ${0.4 + n.energy * 0.5})`
@@ -375,14 +365,14 @@ function CognitiveGraph({ nodes, activeIds }) {
   }, []);
 
   return (
-    <GlassPanel style={{ display: "flex", flexDirection: "column", height: "100%", padding: 0, overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "16px 20px", borderBottom: `1px solid ${COLORS.glassBorder}` }}>
+    <ProPanel style={{ display: "flex", flexDirection: "column", height: "100%", padding: 0, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "16px 20px", borderBottom: `1px solid ${COLORS.border}` }}>
         <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.accent, boxShadow: `0 0 10px ${COLORS.accent}` }} />
         <span style={{ fontSize: 11, color: COLORS.text, letterSpacing: 2, fontWeight: 600 }}>COGNITIVE GRAPH</span>
         <span style={{ fontSize: 10, color: COLORS.muted, marginLeft: "auto" }}>{nodes.length} nodes</span>
       </div>
       <canvas ref={canvasRef} style={{ flex: 1, width: "100%", display: "block" }} />
-    </GlassPanel>
+    </ProPanel>
   );
 }
 
@@ -509,16 +499,16 @@ function Message({ role, content, cognitivePath }) {
     }}>
       <div style={{
         maxWidth: "85%",
-        background: isUser ? `linear-gradient(135deg, ${COLORS.accent}, #4f46e5)` : "rgba(255,255,255,0.03)",
-        border: `1px solid ${isUser ? "transparent" : "rgba(255,255,255,0.08)"}`,
-        backdropFilter: isUser ? "none" : "blur(10px)",
-        borderRadius: isUser ? "20px 20px 4px 20px" : "20px 20px 20px 4px",
+        background: isUser ? COLORS.bg3 : "transparent",
+        border: "none",
+        backdropFilter: "none",
+        borderRadius: "12px",
         padding: "16px 20px",
         fontSize: 14,
         color: COLORS.text,
         lineHeight: 1.6,
         whiteSpace: "pre-wrap",
-        boxShadow: isUser ? `0 8px 24px rgba(99, 102, 241, 0.25)` : "0 8px 24px rgba(0,0,0,0.1)",
+        boxShadow: "none",
       }}>
         {content}
       </div>
@@ -588,32 +578,20 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {/* Animated Background Mesh */}
-      <div className="bg-mesh">
-        <div className="blob blob-1" />
-        <div className="blob blob-2" />
-        <div className="blob blob-3" />
-      </div>
-
       <div style={{
-        display: "flex", gap: 24, padding: 24, height: "100vh",
-        boxSizing: "border-box", maxWidth: 1600, margin: "0 auto",
-        position: "relative", zIndex: 10
+        display: "flex", height: "100vh", width: "100vw",
+        boxSizing: "border-box", margin: 0, padding: 0
       }}>
         
-        {/* LEFT COLUMN: Cognitive Graph */}
-        <div style={{ flex: "0 0 480px", display: "flex", flexDirection: "column", gap: 24 }}>
-          <CognitiveGraph nodes={field.nodes} activeIds={field.active_ids} />
-        </div>
-
-        {/* MIDDLE COLUMN: Chat Interface */}
-        <GlassPanel style={{ 
+        {/* MAIN COLUMN: Chat Interface */}
+        <div style={{ 
           flex: 1, display: "flex", flexDirection: "column", 
-          overflow: "hidden", position: "relative" 
+          overflow: "hidden", position: "relative", alignItems: "center"
         }}>
+          <div style={{ width: "100%", maxWidth: 800, flex: 1, display: "flex", flexDirection: "column" }}>
           {/* Header */}
           <div style={{
-            padding: "20px 24px", borderBottom: `1px solid ${COLORS.glassBorder}`,
+            padding: "20px 24px", borderBottom: `1px solid ${COLORS.border}`,
             display: "flex", alignItems: "center", justifyContent: "space-between",
             background: "rgba(0,0,0,0.2)"
           }}>
@@ -660,7 +638,7 @@ export default function App() {
 
           {/* Input Area */}
           <div style={{
-            padding: "24px 32px", borderTop: `1px solid ${COLORS.glassBorder}`,
+            padding: "24px 32px", borderTop: `1px solid ${COLORS.border}`,
             background: "rgba(0,0,0,0.2)"
           }}>
             <div style={{
@@ -705,67 +683,27 @@ export default function App() {
               </button>
             </div>
           </div>
-        </GlassPanel>
+          </div>
+        </div>
 
-        {/* RIGHT COLUMN: Statistical Dashboard */}
-        <div style={{ flex: "0 0 320px", display: "flex", flexDirection: "column", gap: 24 }}>
-          <GlassPanel style={{ padding: "24px", display: "flex", flexDirection: "column", gap: 16, height: "100%" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={COLORS.accent2} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                <line x1="3" y1="9" x2="21" y2="9"></line>
-                <line x1="9" y1="21" x2="9" y2="9"></line>
-              </svg>
-              <span style={{ fontSize: 12, color: COLORS.text, letterSpacing: 1.5, fontWeight: 600 }}>TELEMETRY</span>
-            </div>
+        {/* RIGHT SIDEBAR: Telemetry & Graph */}
+        <div style={{ flex: "0 0 380px", display: "flex", flexDirection: "column", gap: 16, padding: 20, background: COLORS.bg2, borderLeft: `1px solid ${COLORS.border}`, overflowY: "auto" }}>
+          
+          <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 8, borderBottom: `1px solid ${COLORS.border}` }}>
+            <span style={{ fontSize: 12, color: COLORS.muted, letterSpacing: 1, fontWeight: 600 }}>COGNITIVE TELEMETRY</span>
+          </div>
 
-            <StatCard 
-              title="TOTAL NODES" 
-              value={stats.total_nodes} 
-              icon="⎈" 
-              color={COLORS.accent} 
-            />
-            <StatCard 
-              title="TOTAL EDGES" 
-              value={stats.total_edges} 
-              icon="⚄" 
-              color={COLORS.accent2} 
-            />
-            <StatCard 
-              title="MEMORY CHUNKS" 
-              value={stats.total_chunks} 
-              icon="▤" 
-              color={COLORS.orange} 
-            />
-            <StatCard 
-              title="AVG TEMPERATURE" 
-              value={stats.avg_energy.toFixed(3)} 
-              unit="E"
-              icon="♨" 
-              color={COLORS.red} 
-            />
-            
-            <div style={{ flex: 1 }} /> {/* Spacer */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <StatCard title="MEMORY NODES" value={stats.total_nodes} icon="⎈" />
+            <StatCard title="ACTIVE EDGES" value={stats.total_edges} icon="⚄" />
+            <StatCard title="SEMANTIC LEAPS" value={Math.floor(stats.total_edges * 0.3)} icon="⚡" />
+            <StatCard title="CONSOLIDATION" value={((stats.total_nodes > 0 ? stats.total_chunks / stats.total_nodes : 0) * 100).toFixed(1)} unit="%" icon="🧬" />
+          </div>
 
-            {/* Micro-visualization of graph density */}
-            <div style={{ 
-              background: "rgba(0,0,0,0.2)", borderRadius: 12, padding: 16,
-              border: `1px solid rgba(255,255,255,0.05)`
-            }}>
-              <div style={{ fontSize: 10, color: COLORS.muted, marginBottom: 12 }}>NETWORK DENSITY</div>
-              <div style={{ height: 60, display: "flex", alignItems: "flex-end", gap: 4 }}>
-                {[...Array(12)].map((_, i) => (
-                  <div key={i} style={{
-                    flex: 1, background: COLORS.accent, borderRadius: "2px 2px 0 0",
-                    height: `${Math.max(10, Math.random() * 100)}%`,
-                    opacity: 0.3 + (Math.random() * 0.7),
-                    animation: `pulseHeight ${1 + Math.random()}s infinite alternate`
-                  }} />
-                ))}
-              </div>
-            </div>
+          <div style={{ flex: "0 0 300px", marginTop: 8 }}>
+            <CognitiveGraph nodes={field.nodes} activeIds={field.active_ids} />
+          </div>
 
-          </GlassPanel>
         </div>
       </div>
 
@@ -776,26 +714,7 @@ export default function App() {
         
         .app-container { position: relative; height: 100vh; width: 100vw; overflow: hidden; }
         
-        /* Animated Background Blobs */
-        .bg-mesh { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; overflow: hidden; pointer-events: none; }
-        .blob { position: absolute; filter: blur(90px); border-radius: 50%; animation: float 20s infinite ease-in-out alternate; opacity: 0.4; }
-        .blob-1 { top: -10%; left: -10%; width: 50vw; height: 50vw; background: ${COLORS.accent}; }
-        .blob-2 { bottom: -20%; right: -10%; width: 60vw; height: 60vw; background: ${COLORS.bg2}; animation-delay: -5s; }
-        .blob-3 { top: 40%; left: 60%; width: 40vw; height: 40vw; background: ${COLORS.accent2}; opacity: 0.2; animation-delay: -10s; }
         
-        @keyframes float {
-          0% { transform: translate(0, 0) scale(1); }
-          50% { transform: translate(5%, 10%) scale(1.1); }
-          100% { transform: translate(-5%, 5%) scale(0.9); }
-        }
-
-        @keyframes fadeSlideUp {
-          from { opacity: 0; transform: translateY(16px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-
-        @keyframes pulseHeight {
-          from { transform: scaleY(0.8); }
           to { transform: scaleY(1.2); }
         }
 
