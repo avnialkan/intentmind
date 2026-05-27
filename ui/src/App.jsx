@@ -77,7 +77,7 @@ function StatCard({ title, value, unit, icon, color }) {
   );
 }
 
-function CognitiveGraph({ nodes, activeIds }) {
+function CognitiveGraph({ nodes, activeIds, onNodeSelect }) {
   const canvasRef = useRef(null);
   const simRef = useRef({ nodes: [], edges: [], hovered: null, dragging: null });
   const animRef = useRef(null);
@@ -214,7 +214,7 @@ function CognitiveGraph({ nodes, activeIds }) {
         ctx.strokeStyle = highlight
           ? `rgba(99, 102, 241, ${0.6 + e.confidence * 0.4})`
           : `rgba(148, 163, 184, ${0.35 + e.confidence * 0.35})`;
-        ctx.lineWidth = highlight ? (3 + e.weight * 5) : (1.5 + e.weight * 3);
+        ctx.lineWidth = highlight ? (4 + e.weight * 6) : (1.5 + e.weight * 4);
         ctx.stroke();
 
         // Weight label on highlighted edges
@@ -249,12 +249,17 @@ function CognitiveGraph({ nodes, activeIds }) {
         ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
         if (n.isActive) {
           const grd = ctx.createRadialGradient(n.x - n.radius * 0.3, n.y - n.radius * 0.3, 0, n.x, n.y, n.radius);
-          grd.addColorStop(0, "#10a37f");
-          grd.addColorStop(1, "#10a37f");
+          grd.addColorStop(0, "#10b981");
+          grd.addColorStop(1, "#059669");
           ctx.fillStyle = grd;
         } else {
-          ctx.fillStyle = n.energy > 0.5 ? `rgba(16, 185, 129, ${0.4 + n.energy * 0.5})`
-            : `rgba(148, 163, 184, ${0.15 + n.energy * 0.3})`;
+          // Heatmap coloring based on energy (0.0 to 1.0+)
+          const heat = Math.min(1, Math.max(0, n.energy));
+          // Cold: #1e3a8a (blue), Hot: #f59e0b (orange/yellow)
+          const r = Math.round(30 + heat * 215);
+          const g = Math.round(58 + heat * 100);
+          const b = Math.round(138 - heat * 127);
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.4 + heat * 0.5})`;
         }
         ctx.fill();
         ctx.strokeStyle = n.isActive ? "rgba(129, 140, 248, 0.6)" : "rgba(255,255,255,0.1)";
@@ -350,7 +355,40 @@ function CognitiveGraph({ nodes, activeIds }) {
       const n = getNode(e);
       if (n) { sim.dragging = n.id; canvas.style.cursor = "grabbing"; }
     }
-    function onUp() { sim.dragging = null; }
+    let isDragging = false;
+    function onMove(e) {
+      if (sim.dragging) isDragging = true;
+      const n = getNode(e);
+      sim.hovered = n ? n.id : null;
+      canvas.style.cursor = n ? (sim.dragging ? "grabbing" : "pointer") : "default";
+      if (sim.dragging) {
+        const rect = canvas.getBoundingClientRect();
+        const dn = sim.nodes.find(nd => nd.id === sim.dragging);
+        if (dn) {
+          dn.x = (e.clientX - rect.left) * scale;
+          dn.y = (e.clientY - rect.top) * scale;
+          dn.vx = 0; dn.vy = 0;
+        }
+      }
+    }
+    function onDown(e) {
+      isDragging = false;
+      const n = getNode(e);
+      if (n) { sim.dragging = n.id; canvas.style.cursor = "grabbing"; }
+    }
+    function onUp(e) { 
+      if (!isDragging && sim.dragging === null) {
+        // This was a click, not a drag release.
+        const n = getNode(e);
+        if (n && onNodeSelect) {
+          onNodeSelect(n);
+        } else if (!n && onNodeSelect) {
+          onNodeSelect(null);
+        }
+      }
+      sim.dragging = null; 
+      isDragging = false;
+    }
 
     canvas.addEventListener("mousemove", onMove);
     canvas.addEventListener("mousedown", onDown);
@@ -534,6 +572,7 @@ export default function App() {
   });
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selectedNode, setSelectedNode] = useState(null);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -701,7 +740,7 @@ export default function App() {
           </div>
 
           <div style={{ flex: "0 0 300px", marginTop: 8 }}>
-            <CognitiveGraph nodes={field.nodes} activeIds={field.active_ids} />
+            <CognitiveGraph nodes={field.nodes} activeIds={field.active_ids} onNodeSelect={setSelectedNode} />
           </div>
 
         </div>
