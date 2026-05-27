@@ -55,6 +55,7 @@ class MemoryStore:
 
     def find_intent_by_label(self, label: str):
         normalized = label.strip().lower()
+        matches = []
         for intent in self.intents.values():
             labels_to_check = [intent.label.strip().lower()]
             if intent.lemma:
@@ -62,8 +63,21 @@ class MemoryStore:
             labels_to_check.extend([a.strip().lower() for a in intent.aliases])
             
             if normalized in labels_to_check:
-                return intent
-        return None
+                matches.append(intent)
+        if not matches:
+            return None
+
+        state_rank = {"active": 4, "weak": 3, "candidate": 2, "archived": 1}
+        return sorted(
+            matches,
+            key=lambda item: (
+                state_rank.get(item.state, 0),
+                item.energy,
+                item.source_count,
+                item.last_active,
+            ),
+            reverse=True,
+        )[0]
 
     def find_intent_by_embedding(self, embedding: List[float], threshold: float = 0.80) -> Optional[IntentNode]:
         """
@@ -174,7 +188,7 @@ class MemoryStore:
         results.sort(key=lambda x: x[0], reverse=True)
         return results[:top_k]
 
-    def get_neighbors(self, intent_id: str) -> List[Tuple[str, IntentEdge]]:
+    def get_neighbors(self, intent_id: str, include_candidates: bool = False) -> List[Tuple[str, IntentEdge]]:
         if self._neighbor_cache is None:
             cache: Dict[str, List[Tuple[str, IntentEdge]]] = {}
             for edge in self.edges.values():
@@ -182,10 +196,11 @@ class MemoryStore:
                 cache.setdefault(edge.target_id, []).append((edge.source_id, edge))
             self._neighbor_cache = cache
 
+        allowed_states = {"active", "weak", "candidate"} if include_candidates else {"active", "weak"}
         neighbors = [
             (neighbor_id, edge)
             for neighbor_id, edge in self._neighbor_cache.get(intent_id, [])
-            if edge.state in {"active", "weak"}
+            if edge.state in allowed_states
         ]
         return sorted(neighbors, key=lambda item: (item[1].confidence, item[1].weight), reverse=True)
 

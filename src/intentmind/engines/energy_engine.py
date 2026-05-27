@@ -140,10 +140,7 @@ class EnergyEngine:
         degrees = {nid: len(self.store.get_neighbors(nid)) for nid in self.store.intents}
         supernode_penalties = {}
         for nid, deg in degrees.items():
-            # Penalty represents how much transmission is reduced. 
-            # Transmission factor = 1.0 / math.log(2 + deg)
-            # Penalty = 1.0 - transmission_factor
-            transmission_factor = 1.0 / math.log(2 + deg)
+            transmission_factor = 1.0 / (1.0 + 0.05 * deg)
             supernode_penalties[nid] = 1.0 - transmission_factor
         self.last_supernode_penalties = supernode_penalties
         
@@ -154,31 +151,25 @@ class EnergyEngine:
             pe = snap.get(nid, 0.0)
             
             deg = degrees.get(nid, 0)
-            transmission_factor = 1.0 / math.log(2 + deg)
+            transmission_factor = 1.0 / (1.0 + 0.05 * deg)
             
             # Find neighbors via edges
             for edge in self.store.edges.values():
                 if edge.source_id == nid:
                     target = edge.target_id
-                    updates[target] = updates.get(target, 0.0) + (pe * edge.weight * BOOST * transmission_factor)
+                    updates[target] = updates.get(target, 0.0) + (pe * edge.weight * 1.5 * transmission_factor)
                 elif edge.target_id == nid:
                     target = edge.source_id
-                    updates[target] = updates.get(target, 0.0) + (pe * edge.weight * BOOST * transmission_factor)
+                    updates[target] = updates.get(target, 0.0) + (pe * edge.weight * 1.5 * transmission_factor)
 
-        # Apply updates using the activation function. Query-time field
-        # activation must not passively demote unrelated nodes; long embedder
-        # calls would otherwise make later direct recalls disappear.
+        # Apply updates using the activation function. 
         new_active = []
         for nid, node in self.store.intents.items():
             base = snap.get(nid, 0.0)
             delta = updates.get(nid, 0.0)
             
             if delta > 0 or nid in active_ids:
-                # Do not squash seed intents; they were just reinforced.
-                if nid in active_ids:
-                    ne = min(1.0, base + delta)
-                else:
-                    ne = (base + delta) / (1.0 + base + delta)
+                ne = min(1.0, base + delta)
                 self.write_energy(node, ne, current_time)
                 
                 if ne > THRESHOLD:

@@ -19,6 +19,18 @@ except ImportError:
 # Minimum token length to consider as intent candidate
 _MIN_TOKEN_LEN = 3
 _GRAPH_ROLES = {"topic", "entity", "fact"}
+_REQUEST_OPERATOR_LABELS = {
+    "sen", "sence", "tahmin", "nereye", "nerede", "nasıl", "ne",
+    "you", "your", "guess", "opinion", "where", "what", "how",
+    "think", "suggest", "recommend",
+}
+_CONNECTOR_LABELS = {
+    "and", "or", "but", "because", "since", "with", "without", "from", "into",
+    "said", "reported", "that", "this", "there", "their", "them",
+    "new", "do", "make", "will",
+    "ve", "veya", "ama", "çünkü", "cunku", "için", "icin", "ile", "de", "da",
+    "dedi", "bildirdi", "şu", "bu", "yeni", "yapmak", "yapacağım", "yapacagim",
+}
 
 
 class IntentEngine:
@@ -250,7 +262,9 @@ class IntentEngine:
 
     def extract_intents_with_metadata(self, text: str) -> List[IntentCandidate]:
         # Fast path: Did we just extract this exact text during query?
+        using_grounded_cache = False
         if self._grounded_cache and self._grounded_cache.get("text") == text.strip():
+            using_grounded_cache = True
             extracted = self._grounded_cache["intents"]
             self._last_llm_edges = self._grounded_cache["edges"]
         else:
@@ -265,6 +279,10 @@ class IntentEngine:
         for item in extracted:
             label = item.label.strip()
             if not label or not self._is_graph_intent(item):
+                continue
+            if self._is_request_operator_label(label) or self._is_connector_label(label):
+                continue
+            if using_grounded_cache and not self._intent_supported_by_current_text(label, text):
                 continue
             key = label.casefold()
             if key in seen:
@@ -292,6 +310,8 @@ class IntentEngine:
             )
             if len(result) >= 8:
                 break
+        if len(result) < 8:
+            result = self._augment_missing_concrete_candidates(text, result, seen, limit=8)
         return result
 
     def _extract_with_external(self, text: str) -> List[ExtractedIntent]:
@@ -321,9 +341,10 @@ class IntentEngine:
                             "- The ONLY exception: proper nouns with 2 words (e.g., 'İstanbul', 'Merkez Bankası').\n"
                             "- WRONG: 'arabamla gitmek' → RIGHT: 'araba' and 'gitmek' as SEPARATE intents.\n"
                             "- WRONG: 'benzin fiyatı' → RIGHT: 'benzin' and 'fiyat' as SEPARATE intents.\n"
-                            "- Extract VERBS as bare infinitive/root form (e.g., 'gidiyorum' → 'gitmek').\n"
-                            "- Extract NOUNS as bare singular form (e.g., 'arabayla' → 'araba').\n"
-                            "- Intents MUST be in the SAME LANGUAGE as the input.\n"
+                            "- Extract VERBS in the canonical form for the input language (e.g., Turkish 'gidiyorum' → 'gitmek', English 'going' → 'go').\n"
+                            "- Extract NOUNS/entities as the canonical form for the input language (e.g., English 'cars' → 'car', Turkish 'arabayla' → 'araba', French 'à Paris' → 'Paris', Turkish 'Londra'ya' → 'Londra').\n"
+                            "- MULTILINGUAL SUPPORT: New intents MUST stay in the primary language of the user's current message. Preserve proper nouns, brand names, quoted terms, and existing-language labels exactly when needed.\n"
+                            "- Do not turn opinion/request words like 'sence', 'tahmin', or 'think' into durable graph concepts unless the user is actually discussing cognition.\n"
                             "- ALWAYS extract proper nouns as entity intents.\n"
                             "- Ignore conversational filler (selam, nasılsın, evet, hayır, tamam).\n"
                             "- Maximum 6 intents per message.\n"
@@ -372,19 +393,19 @@ class IntentEngine:
         if not self.client or not self.model:
             return []
 
-        # Collect existing intent labels (only active/weak, skip archived)
-        # Sort by energy descending so the most relevant intents are always
-        # included even when we hit the token-budget cap.
+        # Collect active labels plus salient archived labels. Archived nodes
+        # are normally quiet, but durable entities/facts should still be
+        # available for query-time grounding.
         existing_intents = [
             intent
             for intent in self.store.intents.values()
-            if intent.state in ("active", "weak")
+            if intent.state in ("active", "weak") or self._archived_intent_is_prompt_candidate(intent)
         ]
         if not existing_intents:
             # No graph yet, fall back to standard extraction
             return self._extract_with_llm(query)
 
-        existing_intents.sort(key=lambda i: i.energy, reverse=True)
+        existing_intents.sort(key=self._prompt_candidate_rank, reverse=True)
         labels_str = ", ".join(i.label for i in existing_intents[:100])
 
         try:
@@ -405,29 +426,37 @@ class IntentEngine:
                             "- The ONLY exception: proper nouns with 2 words (e.g., 'İstanbul', 'Merkez Bankası').\n"
                             "- WRONG: 'arabamla gitmek' → RIGHT: 'araba' and 'gitmek' as SEPARATE intents.\n"
                             "- WRONG: 'benzin fiyatı' → RIGHT: 'benzin' and 'fiyat' as SEPARATE intents.\n"
-                            "- Extract VERBS as bare infinitive/root form (e.g., 'gidiyorum' → 'gitmek', 'aldım' → 'almak').\n"
-                            "- Extract NOUNS as bare singular form (e.g., 'arabayla' → 'araba', 'benzine' → 'benzin').\n"
-                            "- Intents MUST be in the EXACT SAME LANGUAGE as the user's input.\n"
+                            "- Extract VERBS in the canonical form for the input language (e.g., Turkish 'gidiyorum' → 'gitmek', Turkish 'aldım' → 'almak', English 'going' → 'go').\n"
+                            "- Extract NOUNS/entities as the canonical form for the input language (e.g., English 'cars' → 'car', Turkish 'arabayla' → 'araba', French 'à Paris' → 'Paris', Turkish 'Londra'ya' → 'Londra').\n"
+                            "- MULTILINGUAL SUPPORT: New intents MUST stay in the primary language of the user's current message. Preserve proper nouns, brand names, quoted terms, and existing-language labels exactly when needed.\n"
+                            "- Do not turn opinion/request words like 'sence', 'tahmin', or 'think' into durable graph concepts unless the user is actually discussing cognition.\n"
                             "- ALWAYS extract proper nouns, brand names, and specific places as exact entity intents.\n"
                             "- Ignore conversational filler.\n"
+                            "- Follow-up handling: if the Current Query is a short follow-up such as 'where?', 'guess where', or 'nereye sence' and it depends on Conversation History, include the durable subject/action from the immediately previous user turn as graph intent context.\n"
+                            "- For event/problem statements, include the actor/entity, affected asset/process, outcome/status, and explicit blocker/cause/missing resource when present.\n"
                             "- Preserve contextual entity meaning. Do not reinterpret entities outside conversation context.\n"
                             "- Only match concepts the query DIRECTLY talks about or strongly implies as durable subjects.\n"
-                            "- Do not match request operators as graph concepts.\n"
+                            "- Do not match request operators, second-person address, question words, or opinion/guess words as graph concepts (e.g., 'you', 'where', 'guess', 'sen', 'sence', 'nereye', 'tahmin'). Put them in the 'request' object instead.\n"
                             "- Assign role='topic' for durable subjects, role='entity' for named things/places/brands, role='fact' for concrete facts.\n"
                             "- Assign role='task' or role='modifier' for request shape (these won't become graph nodes).\n"
-                            "- For 'matched', return labels EXACTLY as they appear in the existing list.\n"
+                            "- For 'matched', return labels EXACTLY as they appear in the existing list, even if the query is in another language.\n"
                             "- CRITICAL: If the query contains '--- Conversation History ---', extract intents ONLY for the '--- Current Query ---'.\n"
                             "- Assign a thematic 'domain' for each intent (e.g., 'Finance', 'Oncology', 'Military').\n"
-                            "- Return at most 5 matched + 3 new.\n\n"
+                            "- Return at most 6 matched + 6 new, prioritizing concrete nouns/entities, statuses, blockers, and causes over generic verbs.\n\n"
                             "RULES FOR EDGES:\n"
                             "- Define the relationship between each pair of related intents.\n"
-                            "- Edge types: instrumental, spatial, causal, temporal, thematic, possessive, descriptive.\n"
+                            "- Edge types: instrumental, spatial, causal, temporal, thematic, possessive, descriptive, co_occurrence.\n"
                             "- Use ONLY the labels you extracted in 'matched' or 'new'.\n\n"
+                            "RULES FOR CONSTRAINTS:\n"
+                            "- 'constraints' are ONLY for durable facts about the USER (e.g. 'I am allergic to peanuts', 'I live in London', 'I dislike red', 'My name is John').\n"
+                            "- DO NOT extract conversational requests or assistant instructions (e.g. 'guess where I am', 'write a poem', 'remember this') as constraints!\n"
+                            "- If the user is just asking a question or making a request, leave the 'constraints' list EMPTY.\n\n"
                             "Return JSON:\n"
                             "{\"matched\": [{\"label\": \"single_word\", \"confidence\": 0.0, \"role\": \"topic|entity|fact\", \"domain\": \"...\"}], "
                             "\"new\": [{\"label\": \"single_word\", \"type\": \"concept|entity|action|fact\", \"role\": \"topic|entity|fact\", \"confidence\": 0.0, \"domain\": \"...\"}], "
-                            "\"edges\": [{\"from\": \"word_a\", \"to\": \"word_b\", \"type\": \"instrumental|spatial|causal|temporal|thematic|possessive|descriptive\"}], "
-                            "\"request\": {\"role\": \"task|modifier\", \"description\": \"...\"}}"
+                            "\"edges\": [{\"from\": \"word_a\", \"to\": \"word_b\", \"type\": \"instrumental|spatial|causal|temporal|thematic|possessive|descriptive|co_occurrence\"}], "
+                            "\"request\": {\"role\": \"task|modifier\", \"description\": \"...\"}, "
+                            "\"constraints\": [{\"fact\": \"...\", \"fact_type\": \"identity|preference|constraint|safety_constraint\", \"related_concepts\": [\"word_a\", \"word_b\"]}]}"
                         ),
                     },
                     {
@@ -463,7 +492,7 @@ class IntentEngine:
                         source="llm_grounded",
                         reason="matched existing intent",
                     )
-                if extracted.label and self._is_graph_intent(extracted) and confidence >= 0.80 and matched_count < 5:
+                if extracted.label and not self._is_request_operator_label(extracted.label) and self._is_graph_intent(extracted) and confidence >= 0.80 and matched_count < 6:
                     results.append(extracted)
                     matched_count += 1
 
@@ -494,17 +523,23 @@ class IntentEngine:
                         source="llm_grounded_new",
                         reason="new concept from query",
                     )
-                if extracted.label and self._is_graph_intent(extracted) and confidence >= 0.70 and new_count < 3:
+                if extracted.label and not self._is_request_operator_label(extracted.label) and self._is_graph_intent(extracted) and confidence >= 0.70 and new_count < 6:
                     results.append(extracted)
                     new_count += 1
 
             # Cache the results for ingestion so we don't call LLM again!
             # The query string format from api.py has the raw text at the end:
             raw_text = query.split("--- Current Query (EXTRACT INTENTS PRIMARILY FOR THIS) ---\nuser: ")[-1] if "--- Current Query" in query else query
+            request_data = data.get("request", {})
+            req_desc = request_data.get("description") if isinstance(request_data, dict) else None
+            constraints = data.get("constraints", [])
+            print(f"[DEBUG] Extracted constraints: {constraints}")
             self._grounded_cache = {
                 "text": raw_text.strip(),
                 "intents": results,
-                "edges": data.get("edges", [])
+                "edges": data.get("edges", []),
+                "request_description": req_desc,
+                "constraints": constraints
             }
 
             return results
@@ -525,6 +560,105 @@ class IntentEngine:
     def _is_graph_intent(self, item: ExtractedIntent | IntentCandidate) -> bool:
         return self._normalize_semantic_role(getattr(item, "role", "topic")) in _GRAPH_ROLES
 
+    def _is_request_operator_label(self, label: str) -> bool:
+        return (label or "").strip().casefold() in _REQUEST_OPERATOR_LABELS
+
+    def _is_connector_label(self, label: str) -> bool:
+        return (label or "").strip().casefold() in _CONNECTOR_LABELS
+
+    def _intent_supported_by_current_text(self, label: str, text: str) -> bool:
+        """
+        Query-time grounding sees conversation history, but ingestion must only
+        store concepts supported by the current user message. This prevents
+        assistant advice or earlier turns from leaking into a new memory chunk.
+        """
+        label_norm = (label or "").strip().casefold()
+        if not label_norm:
+            return False
+        text_norm = (text or "").casefold()
+        if label_norm in text_norm:
+            return True
+
+        for token in re.findall(r"\w+", text_norm, flags=re.UNICODE):
+            if len(token) < 3:
+                continue
+            common = 0
+            for left, right in zip(label_norm, token):
+                if left != right:
+                    break
+                common += 1
+            if common >= 3 and common / max(1, min(len(label_norm), len(token))) >= 0.50:
+                return True
+        return False
+
+    def _too_similar_to_existing(self, embedding: List[float], existing: List[IntentCandidate], threshold: float = 0.88) -> bool:
+        return any(cosine_similarity(embedding, item.embedding) >= threshold for item in existing)
+
+    def _looks_like_surface_variant(self, label: str, existing: List[IntentCandidate]) -> bool:
+        candidate = (label or "").strip().casefold()
+        if len(candidate) < 4:
+            return False
+        for item in existing:
+            base = (item.text or "").strip().casefold()
+            if len(base) < 4 or base == candidate:
+                continue
+            common = 0
+            for left, right in zip(base, candidate):
+                if left != right:
+                    break
+                common += 1
+            if common >= 4 and common / max(1, min(len(base), len(candidate))) >= 0.66:
+                return True
+        return False
+
+    def _augment_missing_concrete_candidates(
+        self,
+        text: str,
+        result: List[IntentCandidate],
+        seen: set,
+        limit: int,
+    ) -> List[IntentCandidate]:
+        """
+        LLM extraction is authoritative for shape, but it sometimes drops concrete
+        event details under a tight JSON budget. Add a small language-neutral
+        backup pass so causes/resources like "account validation" are not lost.
+        """
+        for cand in self.extract_candidates(text):
+            if len(result) >= limit:
+                break
+            label = cand.text.strip()
+            key = label.casefold()
+            if (
+                not label
+                or key in seen
+                or self._is_request_operator_label(label)
+                or self._is_connector_label(label)
+                or self._looks_like_surface_variant(label, result)
+                or self._too_similar_to_existing(cand.embedding, result)
+            ):
+                continue
+            if cand.decision == "reject" and not (label[:1].isupper() or len(label) >= 6):
+                continue
+
+            matched_intent = self._soft_match_intent(label, cand.embedding)
+            seen.add(key)
+            result.append(
+                IntentCandidate(
+                    text=label,
+                    normalized=label,
+                    embedding=cand.embedding,
+                    intent_type=cand.intent_type,
+                    domain=cand.domain,
+                    role="entity" if label[:1].isupper() else "topic",
+                    extraction_confidence=max(0.55, min(0.72, cand.quality_score)),
+                    quality_score=cand.quality_score,
+                    decision="reuse" if matched_intent else "create_active",
+                    matched_intent_id=matched_intent.intent_id if matched_intent else None,
+                    reason="deterministic_concrete_backfill",
+                )
+            )
+        return result
+
     def _normalize_semantic_role(self, role: Any) -> str:
         value = str(role or "topic").strip().lower().replace("_", "-")
         aliases = {
@@ -537,6 +671,9 @@ class IntentEngine:
             "instruction": "task",
             "operator": "modifier",
             "style": "modifier",
+            "descriptive": "modifier",
+            "descriptor": "modifier",
+            "adjective": "modifier",
         }
         value = aliases.get(value, value)
         allowed = {"topic", "entity", "fact", "task", "modifier"}
@@ -780,12 +917,58 @@ class IntentEngine:
             self._create_contextual_edges(intent_ids, evidence_chunk_id=existing_chunk.chunk_id)
             return existing_chunk
 
+        summary_text = text[:240]
+        if hasattr(self, "_grounded_cache"):
+            cache_text = self._grounded_cache.get("text", "")
+            if cache_text and (cache_text in text or text in cache_text):
+                req_desc = self._grounded_cache.get("request_description")
+                if req_desc:
+                    # Özeti tamamen soyutlaştırmamak için, eylem niyetinin yanına orijinal metinden de bir parça ekliyoruz.
+                    summary_text = f"[{req_desc}] {text[:150]}"
+
         chunk = self.store.add_chunk(
-            text=text, summary=text[:240], embedding=embedding,
+            text=text, summary=summary_text, embedding=embedding,
             intent_ids=intent_ids, source=source, chunk_id=chunk_id,
         )
         self._create_edges_from_llm_or_heuristic(intent_ids, evidence_chunk_id=chunk.chunk_id)
         self._create_contextual_edges(intent_ids, evidence_chunk_id=chunk.chunk_id)
+
+        # Ingest HardConstraints as core_facts
+        cache_text = getattr(self, "_grounded_cache", {}).get("text", "") if hasattr(self, "_grounded_cache") else ""
+        print(f"[DEBUG INGEST] text: {repr(text)} | cache_text: {repr(cache_text)}")
+        if cache_text and (cache_text in text or text in cache_text):
+            constraints = getattr(self, "_grounded_cache", {}).get("constraints", [])
+            print(f"[DEBUG INGEST] Matched cache! constraints: {constraints}")
+            for c in constraints:
+                fact_text = c.get("fact")
+                if not fact_text: continue
+                fact_type = c.get("fact_type", "preference")
+                if fact_type not in ["identity", "preference", "constraint", "safety_constraint"]:
+                    fact_type = "preference"
+                
+                related = c.get("related_concepts", [])
+                c_intent_ids = set()
+                # Find matching intent nodes for the constraint concepts
+                for concept in related:
+                    matched = self._soft_match_intent(concept, self.embedder.embed(concept))
+                    if matched:
+                        c_intent_ids.add(matched.intent_id)
+                # Ensure the constraint is at least tied to the current main intents if related_concepts failed
+                if not c_intent_ids:
+                    c_intent_ids.update(intent_ids[:2])
+
+                c_emb = self.embedder.embed(fact_text)
+                c_chunk = self.store.add_chunk(
+                    text=fact_text,
+                    summary=fact_text,
+                    embedding=c_emb,
+                    intent_ids=list(c_intent_ids),
+                    source="constraint_extractor"
+                )
+                c_chunk.memory_tier = "core_fact"
+                c_chunk.fact_type = fact_type
+                c_chunk.reinforcement_count = 2
+
         return chunk
 
     def _create_contextual_edges(self, new_intent_ids: List[str], evidence_chunk_id: str):
@@ -823,6 +1006,26 @@ class IntentEngine:
         if intent.type == "concept" and candidate.intent_type not in {"concept", ""}:
             intent.type = candidate.intent_type
         intent.last_active = now
+
+    def _archived_intent_is_prompt_candidate(self, intent) -> bool:
+        if getattr(intent, "state", "") != "archived":
+            return False
+        if getattr(intent, "type", "") in {"entity", "entity/location", "fact"} and getattr(intent, "source_count", 0) >= 1:
+            return True
+        if getattr(intent, "domain", "general") in {"Conversation", "General", "general"}:
+            return False
+        return getattr(intent, "source_count", 0) >= 3
+
+    def _prompt_candidate_rank(self, intent) -> tuple:
+        state_rank = {"active": 4, "weak": 3, "candidate": 2, "archived": 1}.get(getattr(intent, "state", ""), 0)
+        type_rank = 2 if getattr(intent, "type", "") in {"entity", "entity/location", "fact"} else 1
+        return (
+            state_rank,
+            type_rank,
+            getattr(intent, "energy", 0.0),
+            getattr(intent, "source_count", 0),
+            getattr(intent, "last_active", 0.0),
+        )
 
     # ------------------------------------------------------------------ #
     #  INTENT TYPE (simplified)                                           #
@@ -962,33 +1165,25 @@ class IntentEngine:
                 b = self.store.intents[intent_ids[j]]
                 sim = cosine_similarity(a.embedding, b.embedding)
 
-                # Gate: Don't create edges between semantically unrelated intents.
-                if is_chat:
-                    if sim < 0.15: # Very loose for chat so sentences stay connected
-                        continue
-                else:
-                    if sim < 0.35: # Stricter for long documents/news
-                        continue
+                # Gate: No strict similarity requirement. Co-occurrence is enough for a bridge.
+                # The score formula will handle the rest.
 
                 hub_overlap = max(a.hub_score, b.hub_score)
                 noise_risk = max(a.noise_score, b.noise_score)
 
                 # Rebalanced formula: similarity is now dominant (0.45 weight)
                 edge_score = (
-                    sim * 0.45
-                    + 0.25              # baseline co-presence
+                    sim * 0.20
+                    + 0.60              # baseline co-presence (stronger)
                     + 0.10              # structural bonus
                     - hub_overlap * 0.15
                     - noise_risk * 0.10
                 )
                 
-                if edge_score >= 0.55:
+                if edge_score >= 0.40:
                     edge_type, type_weight = self._classify_edge_heuristic(a, b, chunk_text)
 
-                    # Extra gate for co_occurrence: require higher similarity
-                    if edge_type == "co_occurrence_link" and sim < 0.40:
-                        continue
-
+                    # Remove the extra gate for co_occurrence so bridges can actually form!
                     weight = min(edge_score, type_weight)
                     
                     self.store.add_edge(

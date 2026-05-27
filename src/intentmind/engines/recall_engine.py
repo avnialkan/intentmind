@@ -12,27 +12,30 @@ class RecallEngine:
         self.store = store
         self.intent_match_threshold = intent_match_threshold
 
-
-
-    def recall(
-        self,
-        query,
-        query_embedding,
-        cognitive_state,
-        query_intent_labels=None,
-        query_token_embeddings=None,
-        energy_engine=None,
-    ):
-        query_intent_labels = query_intent_labels or []
-        query_intent_set = set(query_intent_labels)
-        query_token_embeddings = query_token_embeddings or []
-        query_match_intent_ids = self._matching_intent_ids(query_intent_labels, query_token_embeddings)
     # Memory tier multipliers for recall scoring
     _TIER_MULTIPLIERS = {
         "working": 1.20,    # Fresh context — boosted
         "episodic": 1.00,   # Baseline
         "semantic": 1.10,   # Consolidated knowledge — trusted
+        "core_fact": 1.75,  # Profile/Hard Constraints — very high
         "archived": 0.50,   # Fading — heavily penalized
+    }
+
+    _FACT_TYPE_MULTIPLIERS = {
+        "episodic": 1.0,
+        "identity": 1.2,
+        "preference": 1.6,
+        "constraint": 2.0,
+        "safety_constraint": 3.0,
+    }
+
+    _ARCHIVED_RECALL_EDGE_TYPES = {
+        "spatial_link",
+        "instrumental_link",
+        "causal_link",
+        "event_link",
+        "actor_link",
+        "possessive_link",
     }
 
     def chunk_score(self, query_embedding, chunk, intent, path_strength, layer_id=0):
@@ -40,10 +43,20 @@ class RecallEngine:
         seconds_since = time.time() - chunk.created_at
         novelty_score = max(0.0, 1.0 - (seconds_since / 3600))
         intent_match = path_strength # use path strength as intent relevance
-        
+        # Zero Context Bloat guard for core_facts
+        if getattr(chunk, "memory_tier", "episodic") == "core_fact":
+            if intent_match <= 0.01:
+                # If the core_fact wasn't awakened via graph edge propagation, block it!
+                return 0.0
+
         # Memory tier multiplier (importance)
         tier_mult = self._TIER_MULTIPLIERS.get(
             getattr(chunk, "memory_tier", "episodic"), 1.00
+        )
+        
+        # Fact Type Multiplier
+        fact_mult = self._FACT_TYPE_MULTIPLIERS.get(
+            getattr(chunk, "fact_type", "episodic"), 1.0
         )
         
         # Trust/Reliability factor
@@ -62,6 +75,7 @@ class RecallEngine:
             relevance * 
             max(0.5, novelty_score) * 
             tier_mult * 
+            fact_mult *
             trust
         )
         return round(base, 4)
@@ -110,7 +124,7 @@ class RecallEngine:
                 field.propagate(ticks=3)
                 layers = field.to_layers()
 
-        thresholds = {0: 0.25, 1: 0.38, 2: 0.35, 3: 0.45}
+        thresholds = {0: 0.25, 1: 0.22, 2: 0.15, 3: 0.15}
         candidates, rejected = [], []
         
         for layer_id, intent_items in layers.items():
@@ -121,6 +135,9 @@ class RecallEngine:
                 
                 for chunk in self.store.get_chunks_by_intent(intent.intent_id):
                     score = self.chunk_score(query_embedding, chunk, intent, path_strength, layer_id=layer_id)
+                    if score <= 0.0:
+                        continue
+                    
                     query_intent_overlap = self._query_intent_overlap(
                         chunk,
                         query_intent_set,
@@ -135,6 +152,7 @@ class RecallEngine:
                     candidate_intent_matched = intent.intent_id in query_match_intent_ids or candidate_label_exact
                     edge_support = item.get("edge_support", 0) or 0
                     edge_confidence = item.get("edge_confidence", 0.0) or 0.0
+                    edge_type = item.get("edge_type")
 
                     if query_intent_overlap and (candidate_intent_matched or intent_chunk_similarity >= 0.30):
                         score += min(0.18, 0.06 * query_intent_overlap)
@@ -143,18 +161,21 @@ class RecallEngine:
                         score += min(0.12, 0.06 * query_intent_overlap)
 
                     if layer_id > 0:
-                        if intent_chunk_similarity < 0.25:
-                            score -= 0.18
+                        if intent_chunk_similarity < 0.20:
+                            score -= 0.15
                         if query_intent_overlap == 0 and edge_support <= 1:
-                            score -= 0.22
-                        elif query_intent_overlap == 1 and edge_support <= 1 and edge_confidence < 0.56:
-                            score -= 0.08
+                            score -= 0.10
+                        elif query_intent_overlap == 1 and edge_support <= 1 and edge_confidence < 0.50:
+                            score -= 0.04
 
                         # Semantic relevance gate: HARD REJECT chunks whose
                         # actual text is unrelated to the query. No mercy.
-                        # EXCEPT for chat chunks — conversational context relies on the graph, not text matching.
-                        if query_chunk_similarity < 0.30 and chunk.source != "chat":
+                        # EXCEPT for conversational chunks — their relevance relies on the graph, not text matching.
+                        if query_chunk_similarity < 0.30 and chunk.source not in ["chat", "user", "ai", "constraint_extractor"]:
                             continue  # Skip entirely — this chunk is noise
+
+                        if self._archived_association_is_recallable(intent, chunk, edge_type, edge_confidence):
+                            score += 0.24
                     
                     # Association bonus
                     if called_by:
@@ -252,6 +273,11 @@ class RecallEngine:
             candidate_label_exact = intent.label in query_intent_set
             candidate_intent_matched = intent.intent_id in set(query_match_intent_ids or []) or candidate_label_exact
 
+            # Zero Context Bloat guard for core_facts in raw semantic search
+            if getattr(chunk, "memory_tier", "episodic") == "core_fact":
+                if not candidate_intent_matched:
+                    continue
+
             score = (
                 query_chunk_similarity * 0.55
                 + max(intent_query_similarity, 0.0) * 0.25
@@ -330,6 +356,12 @@ class RecallEngine:
                     or candidate_label_exact
                 )
 
+                # Zero Context Bloat guard for core_facts in LLM intent search
+                if getattr(chunk, "memory_tier", "episodic") == "core_fact":
+                    # For core facts, only allow them if the currently matched intent actually belongs to the chunk
+                    if not chunk.intent_ids or getattr(intent, "intent_id", None) not in chunk.intent_ids:
+                        continue
+
                 score = (
                     label_chunk_similarity * 0.65
                     + query_chunk_similarity * 0.25
@@ -389,25 +421,21 @@ class RecallEngine:
         confidence_factor = 0.75 + min(1.0, edge.confidence) * 0.25
         support_factor = 1.0 + min(0.12, max(0, edge.support_count - 1) * 0.04)
         
-        # Universal Jump Brake Multipliers
+        # Universal Jump Brake Multipliers (Match LLM output exactly)
         role_multipliers = {
-            "weak_echo": 0.0,
-            "co_occurrence_link": 0.75,
-            "thematic_link": 0.3,
-            "spatial_link": 0.6,
-            "actor_link": 0.6,
-            "event_link": 0.9,
-            "causal_link": 0.9,
-            "instrumental_link": 0.9,
+            "instrumental": 0.95,
+            "spatial": 0.85,
+            "causal": 0.95,
+            "temporal": 0.85,
+            "thematic": 0.80,
+            "possessive": 0.90,
+            "descriptive": 0.80,
+            "co_occurrence": 0.75,
+            "weak_echo": 0.10,
         }
-        edge_multiplier = role_multipliers.get(edge.edge_type, 0.5)
+        edge_multiplier = role_multipliers.get(edge.edge_type, 0.80)
         
-        # Cross-Domain Penalty
-        domain_penalty = 1.0
-        if getattr(source_intent, "domain", "general") != getattr(target_intent, "domain", "general"):
-            domain_penalty = 0.15
-            
-        return round(edge.weight * confidence_factor * support_factor * multiplier * edge_multiplier * domain_penalty, 4)
+        return round(edge.weight * confidence_factor * support_factor * multiplier * edge_multiplier, 4)
 
     def _collapse_semantic_duplicates(self, selected_chunks):
         collapsed = []
@@ -453,18 +481,18 @@ class RecallEngine:
             iid = c["intent"].intent_id
             hub_size = len(self.store.get_chunks_by_intent(iid))
             if hub_size > 5:
-                max_per_intent = 2 if is_broad_query else 1
-                if c.get("query_chunk_similarity", 0.0) < 0.25:
+                max_per_intent = 5 if is_broad_query else 4
+                if c.get("query_chunk_similarity", 0.0) < 0.20:
                     continue
             else:
-                max_per_intent = 2
+                max_per_intent = 5
             intent_counts[iid] = intent_counts.get(iid, 0) + 1
             if intent_counts[iid] <= max_per_intent:
                 selected.append(c)
 
         # Semantic Collapse & Token Budgeting (Max 8 direct chunks)
         selected = self._collapse_semantic_duplicates(selected)
-        return selected[:8]
+        return selected[:12]
 
     def _select_associated(self, candidates, direct, query_intent_set):
         associated = [c for c in candidates if c["layer"] in [1, 2]]
@@ -490,27 +518,27 @@ class RecallEngine:
                         or (
                             c.get("called_by") in query_intent_set
                             and c.get("edge_confidence", 0.0) >= 0.50
-                            and c["score"] >= 0.45
+                            and c["score"] >= 0.25
                         )
                     )
                 )
-                and c["score"] >= 0.40
+                and c["score"] >= 0.15
             ]
             selected = self._collapse_semantic_duplicates(selected)
-            l1_selected = [c for c in selected if c["layer"] == 1][:4]
-            l2_selected = [c for c in selected if c["layer"] == 2][:2]
+            l1_selected = [c for c in selected if c["layer"] == 1][:6]
+            l2_selected = [c for c in selected if c["layer"] == 2][:3]
             return l1_selected + l2_selected
 
         best_score = associated[0]["score"]
         effective_best = min(best_score, 1.05)
         selected = [
             c for c in associated
-            if c["score"] >= 0.40
+            if c["score"] >= 0.15
             and self._associated_is_grounded(c)
             and (
                 (
                     c.get("called_by") in query_intent_set
-                    and c.get("edge_confidence", 0.0) >= 0.50
+                    and c.get("edge_confidence", 0.0) >= 0.30
                 )
                 or (
                     c["score"] >= effective_best * 0.75
@@ -518,11 +546,11 @@ class RecallEngine:
                         c.get("query_intent_overlap", 0) >= 2
                         or (
                             c.get("query_intent_overlap", 0) >= 1
-                            and c.get("edge_confidence", 0.0) >= 0.50
-                            and c["score"] >= 0.50
+                            and c.get("edge_confidence", 0.0) >= 0.30
+                            and c["score"] >= 0.25
                         )
                         or (
-                            c.get("edge_confidence", 0.0) >= 0.50
+                            c.get("edge_confidence", 0.0) >= 0.30
                             and c["score"] >= 0.55
                         )
                         or (
@@ -546,7 +574,20 @@ class RecallEngine:
         if item.get("candidate_intent_matched"):
             return True
         edge_type = item.get("edge_type")
-        return edge_type in {"event_link", "causal_link", "instrumental_link"}
+        return edge_type in {"event_link", "causal_link", "instrumental_link", "spatial_link"}
+
+    def _archived_association_is_recallable(self, intent, chunk, edge_type, edge_confidence):
+        if getattr(chunk, "memory_tier", "episodic") != "archived":
+            return False
+        if getattr(intent, "state", "") != "archived":
+            return False
+        if edge_type not in self._ARCHIVED_RECALL_EDGE_TYPES:
+            return False
+        if edge_confidence < 0.30:
+            return False
+        if getattr(intent, "type", "") in {"entity", "entity/location", "fact"}:
+            return True
+        return getattr(intent, "source_count", 0) >= 3 and edge_confidence >= 0.40
 
     def _dedupe_layer(self, items):
         best = {}

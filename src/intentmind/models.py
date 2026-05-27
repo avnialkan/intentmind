@@ -31,7 +31,12 @@ class Chunk:
     feedback_score: float = 0.0
     noise_score: float = 0.0
     reinforcement_count: int = 1
-    memory_tier: str = "episodic"  # working | episodic | semantic | archived
+    memory_tier: str = "episodic"  # working | episodic | semantic | core_fact | archived
+    fact_type: str = "episodic"    # episodic | identity | preference | constraint | safety_constraint
+    priority: float = 1.0
+    decay_rate: float = 0.1
+    contradiction_watch: bool = True
+    status: str = "active"
 
     def to_dict(self) -> dict:
         return asdict(self)

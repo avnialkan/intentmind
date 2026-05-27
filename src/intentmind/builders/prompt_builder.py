@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
-
+from .answer_focus_builder import AnswerFocusBuilder
 
 class PromptBuilder:
     """
@@ -45,6 +44,7 @@ class PromptBuilder:
     
     def __init__(self, max_chars: int = 60000):
         self.max_chars = max_chars
+        self.answer_focus = AnswerFocusBuilder()
 
     # ================================================================== #
     #  PUBLIC API                                                         #
@@ -52,10 +52,18 @@ class PromptBuilder:
 
     def build(self, user_query, recall_result, cognitive_state):
         role = self._build_role()
+        
+        request_desc = recall_result.get("request_description")
+        if request_desc:
+            request_block = f"[USER INTENT SUMMARY]\n{request_desc}\n\n"
+        else:
+            request_block = ""
+            
         graph = self._build_graph_state(recall_result)
+        focus = self.answer_focus.build_block(user_query, recall_result)
         memories = self._build_memories(recall_result)
         
-        prompt = f"{role}\n\n{graph}\n\n{memories}".strip()
+        prompt = f"{role}\n\n{request_block}{graph}\n\n{focus}\n\n{memories}".strip()
         
         if len(prompt) <= self.max_chars:
             return prompt
@@ -67,14 +75,29 @@ class PromptBuilder:
 
     def _build_role(self):
         return (
-            "You are an intelligent, conversational assistant.\n"
-            "RULES:\n"
-            "- You have been provided with some RECALLED FACTS below.\n"
-            "- CRITICAL: Speak as if you already know these facts naturally. DO NOT ever say 'according to the recalled facts', 'based on the context', 'my memories say', or mention any source tags like '[news]'.\n"
-            "- Synthesize the facts directly into your answer.\n"
-            "- If the facts answer the user's question, rely on them heavily but weave them into a natural response.\n"
-            "- If the facts are insufficient, supplement with your general knowledge naturally.\n"
-            "- Respond in the user's language. Be direct, confident, and conversational."
+            "You are an intelligent assistant with a long-term associative memory.\n"
+            "The user has previously shared information with you, which has been recalled via a Cognitive Graph.\n\n"
+            "RESPONSE PROCEDURE:\n"
+            "1. Identify what the user is asking for now: answer, guess, follow-up continuation, advice, or system/language explanation.\n"
+            "2. Read [ANSWER FOCUS] first. If it contains a primary_candidate relevant to the question, make that the lead of your answer.\n"
+            "3. If [ANSWER FOCUS] contains current_observation, treat it as the live user situation and answer it directly even when no long-term memory was recalled.\n"
+            "4. Use [RECALLED FACTS] as long-term evidence. Direct facts are strongest; associated facts can be used when they clearly support the current question; weak echoes are hints only.\n"
+            "5. Use [COGNITIVE FIELD] only for navigation. It is NOT evidence and must never be treated as a fact.\n"
+            "6. Then answer in the user's language, briefly and conversationally.\n\n"
+            "HARD BEHAVIOR RULES:\n"
+            "- Answer the user's current message directly; do not turn ordinary chat into a lesson.\n"
+            "- Below you will find the COGNITIVE FIELD and RECALLED FACTS.\n"
+            "- CRITICAL: Use memory naturally. DO NOT use meta-phrases like 'according to my memory', 'based on the context', or mention internal labels, scores, paths, layers, or source tags.\n"
+            "- Never explain intent extraction, roots, lemmas, dictionary forms, or graph nodes to the user unless they explicitly ask about language or the system internals.\n"
+            "- For short continuation messages, infer the conversational intent from recent messages instead of treating the text as a grammar exercise.\n"
+            "- If the user sends a short action fragment (for example 'I'm going', 'gidiyorum') in a travel/route context, respond as if they are continuing the route conversation; do not define the verb.\n"
+            "- If the user asks for a destination, blocker, owner, decision, or prior fact and [ANSWER FOCUS] has a primary_candidate, lead with that candidate in the first sentence. Do not list generic alternatives first.\n"
+            "- If the user reports a current problem or situation, answer the current problem first. Long-term memory can supplement it, but lack of recalled facts must not block practical help.\n"
+            "- Respect the answer_policy and confidence in [ANSWER FOCUS]: high = answer directly, medium = cautious memory-backed guess, low/no candidate = ask a concise follow-up.\n"
+            "- Never invent details from concept labels, graph connections, scores, or traversal paths. Only state a remembered detail if it appears in the recalled fact text or follows directly from the user's message.\n"
+            "- If the recalled facts are insufficient, say so naturally and ask a concise follow-up instead of guessing.\n"
+            "- Exception: if the user explicitly asks for a guess or opinion (e.g., 'sence', 'tahmin et'), you may give one brief, clearly framed guess from the available facts, then ask at most one follow-up.\n"
+            "- CRITICAL: ALWAYS respond in the EXACT SAME LANGUAGE the user is speaking.\n"
         )
 
     # ================================================================== #
@@ -159,70 +182,38 @@ class PromptBuilder:
         memories = sorted(memories, key=lambda x: x["score"], reverse=True)[:20]
 
         if not memories:
-            return "=== RECALLED FACTS ===\nNo specific facts recalled. Use general knowledge."
+            return "=== RECALLED FACTS ===\nNo specific facts recalled. Do not pretend to remember details."
 
-        # Group by intent topic
-        groups = defaultdict(list)
+        lines = [
+            "=== RECALLED FACTS ===",
+            "Use these candidate memories in order of relevance. Direct facts are strongest; associated facts are supporting context; weak echoes are only hints.",
+        ]
+        seen_chunks = set()
+        index = 1
         for item in memories:
-            intent = item["intent"]
-            label = intent.label if hasattr(intent, "label") else str(intent)
-            domain = getattr(intent, "domain", "general")
-            score = round(item["score"], 2)
+            chunk = item["chunk"]
+            chunk_id = getattr(chunk, "chunk_id", None)
+            if chunk_id and chunk_id in seen_chunks:
+                continue
+            if chunk_id:
+                seen_chunks.add(chunk_id)
+
             layer = item.get("layer", 0)
-            
-            # Cognitive Token Budgeting: Length depends on the layer (Ring)
-            raw_text = item["chunk"].text
+            layer_name = {0: "direct", 1: "associated", 2: "associated", 3: "weak_echo"}.get(layer, "associated")
+
+            raw_text = chunk.text
             if layer == 0:
-                # Ring 0 / Direct: High budget
                 text = self._compress(raw_text, max_len=600)
-            elif layer == 1:
-                # Ring 1 / Strong Neighbors: Medium budget
-                text = self._compress(raw_text, max_len=200)
-            elif layer == 2:
-                # Ring 2 / Weak Associative: Low budget (just facts/summaries)
-                text = self._compress(raw_text, max_len=80)
+            elif layer in (1, 2):
+                text = self._compress(raw_text, max_len=220)
             else:
-                # Ring 3 / Echo: Signal only
-                text = ""
+                text = self._compress(raw_text, max_len=120)
 
-            called_by = item.get("called_by")
-            edge_type = item.get("edge_type", "")
-            reason = item.get("reason", "")
-            source = item["chunk"].source
-            
-            # Build provenance string
-            via = ""
-            if called_by:
-                via = f" (via: {called_by}"
-                if edge_type:
-                    via += f", edge: {edge_type}"
-                via += ")"
-            
-            layer_name = {0: "direct", 1: "associated", 2: "weak_echo", 3: "faint"}.get(layer, str(layer))
-            
-            groups[label].append({
-                "score": score,
-                "text": text,
-                "layer": layer_name,
-                "via": via,
-                "source": source,
-                "domain": domain,
-            })
+            if not text:
+                continue
 
-        lines = ["=== RECALLED FACTS ==="]
-        for topic, items in groups.items():
-            domain = items[0]["domain"] if items[0]["domain"] != "general" else ""
-            domain_str = f" [{domain}]" if domain else ""
-            lines.append(f"\n▸ {topic}{domain_str}:")
-            for m in items[:5]:
-                source_tag = f"[{m['source']}]" if m['source'] != 'chat' else ""
-                layer_tag = f"[{m['layer']}, {m['score']}]"
-                
-                # If Ring 3, we don't output text, just the signal.
-                if m["text"]:
-                    lines.append(f'  {layer_tag}{m["via"]}{" " + source_tag if source_tag else ""} "{m["text"]}"')
-                else:
-                    lines.append(f'  {layer_tag}{m["via"]}{" " + source_tag if source_tag else ""} (activation signal only)')
+            lines.append(f'{index}. ({layer_name}) "{text}"')
+            index += 1
 
         return "\n".join(lines)
 

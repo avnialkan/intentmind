@@ -113,6 +113,9 @@ class IntentmindMemory:
         )
         t_recall = _time.perf_counter()
 
+        # Inject the LLM's understanding of the user request into the prompt
+        recall_result["request_description"] = getattr(self._intent_engine, "_grounded_cache", {}).get("request_description")
+
         prompt = self._prompt.build(user_query=user_query, recall_result=recall_result, cognitive_state=cognitive_state)
         t_prompt = _time.perf_counter()
 
@@ -143,6 +146,7 @@ class IntentmindMemory:
                         "score": item["score"],
                         "layer": item["layer"],
                         "intent": item["intent"].label,
+                        "intent_id": item["intent"].intent_id,
                         "intent_ids": item["chunk"].intent_ids,
                         "source": item["chunk"].source,
                         "path_strength": round(item.get("path_strength", 0.0), 3),

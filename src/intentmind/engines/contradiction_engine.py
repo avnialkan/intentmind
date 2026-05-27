@@ -177,12 +177,31 @@ class ContradictionEngine:
         self, new_chunk: Chunk, old_chunk: Chunk, contradiction_type: str
     ) -> dict:
         """Apply resolution strategy and return metadata."""
+        # HardConstraints override: core_fact always beats episodic/semantic
+        tier_a = getattr(new_chunk, "memory_tier", "episodic")
+        tier_b = getattr(old_chunk, "memory_tier", "episodic")
+        if tier_a == "core_fact" and tier_b != "core_fact":
+            return self._resolve_manual_winner(new_chunk, old_chunk, "core_fact_override")
+        elif tier_b == "core_fact" and tier_a != "core_fact":
+            return self._resolve_manual_winner(old_chunk, new_chunk, "core_fact_override")
+
         if self.strategy == "reinforcement":
             return self._resolve_by_reinforcement(new_chunk, old_chunk)
         elif self.strategy == "coexist":
             return self._resolve_coexist(new_chunk, old_chunk)
         else:
             return self._resolve_by_recency(new_chunk, old_chunk)
+
+    def _resolve_manual_winner(self, winner: Chunk, loser: Chunk, strategy: str) -> dict:
+        if getattr(loser, "memory_tier", "episodic") == "core_fact":
+            loser.status = "archived"
+        loser.noise_score = min(1.0, loser.noise_score + self.noise_penalty)
+        return {
+            "strategy": strategy,
+            "winner_id": winner.chunk_id,
+            "loser_id": loser.chunk_id,
+            "action": f"noise_penalty +{self.noise_penalty} applied to {loser.chunk_id}",
+        }
 
     def _resolve_by_recency(self, new_chunk: Chunk, old_chunk: Chunk) -> dict:
         """Newer information wins. Older chunk gets noise penalty."""
@@ -191,6 +210,10 @@ class ContradictionEngine:
         else:
             winner, loser = old_chunk, new_chunk
 
+        if getattr(loser, "memory_tier", "episodic") == "core_fact":
+            loser.status = "archived"
+            loser.memory_tier = "archived"
+            
         loser.noise_score = min(1.0, loser.noise_score + self.noise_penalty)
         return {
             "strategy": "recency",

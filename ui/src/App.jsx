@@ -222,9 +222,9 @@ function CognitiveGraph({ nodes, activeIds }) {
         ctx.moveTo(e.source.x, e.source.y);
         ctx.lineTo(e.target.x, e.target.y);
         ctx.strokeStyle = highlight
-          ? `rgba(99, 102, 241, ${0.4 + e.confidence * 0.5})`
-          : `rgba(148, 163, 184, ${0.08 + e.confidence * 0.15})`;
-        ctx.lineWidth = highlight ? (2 + e.weight * 4) : (1 + e.weight * 2);
+          ? `rgba(99, 102, 241, ${0.6 + e.confidence * 0.4})`
+          : `rgba(148, 163, 184, ${0.35 + e.confidence * 0.35})`;
+        ctx.lineWidth = highlight ? (3 + e.weight * 5) : (1.5 + e.weight * 3);
         ctx.stroke();
 
         // Weight label on highlighted edges
@@ -561,7 +561,7 @@ export default function App() {
     setMessages(newMessages);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/chat", {
+      const res = await fetch("http://127.0.0.1:8002/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages }),

@@ -21,6 +21,36 @@ class CognitiveField:
         self.seen_intents = set()
         self.current_time = time.time()
 
+    _ARCHIVED_RECALL_EDGE_TYPES = {
+        "spatial_link",
+        "instrumental_link",
+        "causal_link",
+        "event_link",
+        "actor_link",
+        "possessive_link",
+    }
+
+    def _archived_neighbor_is_recallable(self, intent, edge) -> bool:
+        """
+        Archived nodes stay quiet by default, but strong typed edges can
+        temporarily wake durable old memories during recall. This is
+        language-agnostic: it uses graph evidence, not suffix rules.
+        """
+        if not intent or intent.state != "archived":
+            return False
+        if edge.edge_type not in self._ARCHIVED_RECALL_EDGE_TYPES:
+            return False
+        if edge.confidence < 0.30:
+            return False
+        if intent.type in {"entity", "entity/location", "fact"} and intent.source_count >= 1:
+            return True
+        return intent.source_count >= 3 and edge.confidence >= 0.40
+
+    def _same_label_or_alias(self, left, right) -> bool:
+        left_labels = {left.label.strip().casefold(), *[a.strip().casefold() for a in getattr(left, "aliases", [])]}
+        right_labels = {right.label.strip().casefold(), *[a.strip().casefold() for a in getattr(right, "aliases", [])]}
+        return bool(left_labels.intersection(right_labels))
+
     def activation_score(self, intent):
         query_similarity = cosine_similarity(self.query_embedding, intent.embedding)
         edges = self.store.get_neighbors(intent.intent_id)
@@ -50,25 +80,21 @@ class CognitiveField:
         confidence_factor = 0.75 + min(1.0, edge.confidence) * 0.25
         support_factor = 1.0 + min(0.12, max(0, edge.support_count - 1) * 0.04)
         
-        # Universal Jump Brake Multipliers
+        # Universal Jump Brake Multipliers (Match LLM output exactly)
         role_multipliers = {
-            "weak_echo": 0.10, # Increased from 0.0
-            "co_occurrence_link": 0.75,
-            "thematic_link": 0.3,
-            "spatial_link": 0.6,
-            "actor_link": 0.6,
-            "event_link": 0.9,
-            "causal_link": 0.9,
-            "instrumental_link": 0.9,
+            "instrumental": 0.95,
+            "spatial": 0.85,
+            "causal": 0.95,
+            "temporal": 0.85,
+            "thematic": 0.80,
+            "possessive": 0.90,
+            "descriptive": 0.80,
+            "co_occurrence": 0.75,
+            "weak_echo": 0.10,
         }
-        edge_multiplier = role_multipliers.get(edge.edge_type, 0.5)
+        edge_multiplier = role_multipliers.get(edge.edge_type, 0.80) # Default to 0.8 instead of 0.5
         
-        # Cross-Domain Penalty
-        domain_penalty = 1.0
-        if getattr(source_intent, "domain", "general") != getattr(target_intent, "domain", "general"):
-            domain_penalty = 0.15
-            
-        return round(edge.weight * confidence_factor * support_factor * multiplier * edge_multiplier * domain_penalty, 4)
+        return round(edge.weight * confidence_factor * support_factor * multiplier * edge_multiplier, 4)
 
     def _dedupe_layer(self, items):
         best = {}
@@ -156,13 +182,45 @@ class CognitiveField:
                     })
                     self.seen_intents.add(intent.intent_id)
 
+        # Semantic Bridging: Project energy to highly similar synonym nodes (to fix fragmentation like gitmek vs gidecektim)
+        semantic_bridges = []
+        for item in self.layers[0]:
+            if item["score"] < 0.75:
+                continue
+            for other_intent in self.store.intents.values():
+                if other_intent.intent_id in self.seen_intents:
+                    continue
+                sim = cosine_similarity(item["intent"].embedding, other_intent.embedding)
+                archived_duplicate = (
+                    other_intent.state == "archived"
+                    and other_intent.source_count >= 2
+                    and (self._same_label_or_alias(item["intent"], other_intent) or sim >= 0.94)
+                )
+                if other_intent.state == "archived" and not archived_duplicate:
+                    continue
+                if sim >= 0.82 or archived_duplicate: # Very strong similarity required for bridging
+                    semantic_bridges.append({
+                        "intent": other_intent,
+                        "score": round(item["score"] * max(sim, 0.90) * 0.95, 4),
+                        "path_strength": round(item["path_strength"] * max(sim, 0.90) * 0.95, 4),
+                        "called_by": item["intent"].label,
+                        "reason": "archived_duplicate_bridge" if archived_duplicate else "semantic_bridge",
+                        "path": item["path"] + [other_intent.label],
+                        "from_seed": False,
+                    })
+        
+        for bridge in semantic_bridges:
+            if bridge["intent"].intent_id not in self.seen_intents:
+                self.layers[0].append(bridge)
+                self.seen_intents.add(bridge["intent"].intent_id)
+
         self.layers[0] = sorted(self.layers[0], key=lambda x: x["score"], reverse=True)[:12]
         seen_l0 = {item["intent"].intent_id for item in self.layers[0]}
         
         # Layer 1
         for item in self.layers[0]:
             intent = item["intent"]
-            for path_order, (neighbor_id, edge) in enumerate(self.store.get_neighbors(intent.intent_id)):
+            for path_order, (neighbor_id, edge) in enumerate(self.store.get_neighbors(intent.intent_id, include_candidates=True)):
                 neighbor = self.store.intents.get(neighbor_id)
                 if neighbor_id in seen_l0 and neighbor and neighbor.label in self.query_intent_label_set:
                     continue
@@ -173,8 +231,11 @@ class CognitiveField:
                         if intent_sim < 0.40:
                             continue
 
-                if neighbor and neighbor.state == "active" and edge.energy >= 0.45 and edge.weight >= 0.40 and edge.confidence >= 0.50:
+                can_recall_archived = self._archived_neighbor_is_recallable(neighbor, edge)
+                if neighbor and (neighbor.state in ["active", "weak"] or can_recall_archived) and edge.energy >= 0.20 and edge.weight >= 0.25 and edge.confidence >= 0.15:
                     edge_score = self._edge_path_score(intent, neighbor, edge)
+                    if can_recall_archived:
+                        edge_score = round(edge_score * 0.92, 4)
                     self.layers[1].append({
                         "intent": neighbor, 
                         "score": edge_score, 
@@ -207,7 +268,7 @@ class CognitiveField:
                     if neighbor_id in self.seen_intents:
                         continue
                     neighbor = self.store.intents.get(neighbor_id)
-                    if neighbor and neighbor.state == "active" and edge.energy >= 0.35 and edge.weight >= 0.35 and edge.confidence >= 0.45:
+                    if neighbor and neighbor.state in ["active", "weak"] and edge.energy >= 0.15 and edge.weight >= 0.20 and edge.confidence >= 0.10:
                         edge_score = self._edge_path_score(intent, neighbor, edge, multiplier=0.85)
                         self.layers[2].append({
                             "intent": neighbor, 

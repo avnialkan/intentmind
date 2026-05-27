@@ -64,7 +64,81 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
 
 STORE_USER_CHAT = os.getenv("INTENTMIND_STORE_USER_CHAT", "1").lower() in {"1", "true", "yes"}
+STORE_ALL_USER_CHAT = os.getenv("INTENTMIND_STORE_ALL_USER_CHAT", "0").lower() in {"1", "true", "yes"}
 MAX_SHORT_HISTORY = int(os.getenv("INTENTMIND_SHORT_HISTORY", "6"))
+API_PORT = int(os.getenv("INTENTMIND_API_PORT", "8002"))
+API_RELOAD = os.getenv("INTENTMIND_RELOAD", "0").lower() in {"1", "true", "yes"}
+
+_EXPLICIT_MEMORY_MARKERS = (
+    "remember this",
+    "remember that",
+    "please remember",
+    "save this",
+    "keep in mind",
+    "bunu hatırla",
+    "şunu hatırla",
+    "unutma",
+    "kaydet",
+    "aklında tut",
+)
+
+_REQUEST_ONLY_TERMS = {
+    "sence", "nereye", "nerede", "nasıl", "ne", "kim", "tahmin", "mi", "mı",
+    "where", "what", "how", "who", "guess", "think", "you",
+}
+
+_EVENT_PROBLEM_MARKERS = {
+    "flat", "puncture", "punctured", "broken", "broke", "missing", "lost", "stuck",
+    "blocked", "failed", "error", "issue", "problem", "crash", "crashed",
+    "patladı", "patladi", "bozuldu", "yok", "kayıp", "kayip", "takıldı", "takildi",
+    "kaldım", "kaldim", "hata", "sorun", "engel",
+}
+
+_QUESTION_START_TERMS = {
+    "what", "where", "who", "which", "why", "how",
+    "ne", "nereye", "nerede", "kim", "hangi", "neden", "nasıl",
+}
+
+
+def is_substantive_memory_statement(text: str) -> bool:
+    tokens = [tok for tok in text.casefold().replace("?", " ").replace("!", " ").split() if tok]
+    if len(tokens) < 4:
+        return False
+    if "?" in text or tokens[0] in _QUESTION_START_TERMS:
+        return False
+
+    non_request_tokens = [tok for tok in tokens if tok not in _REQUEST_ONLY_TERMS]
+    if len(non_request_tokens) < 3:
+        return False
+
+    lowered = text.casefold()
+    if any(marker in lowered for marker in _EVENT_PROBLEM_MARKERS):
+        return True
+
+    # Store descriptive statements, not tiny follow-up requests.
+    return "?" not in text and len(non_request_tokens) >= 5
+
+
+def should_store_user_chat(text: str) -> bool:
+    """
+    Long-term memory should contain durable user facts, not every short query.
+    Short-term chat history already handles follow-ups inside the current turn.
+    """
+    if not text or not text.strip():
+        return False
+    if STORE_ALL_USER_CHAT:
+        return True
+
+    cache = getattr(memory._intent_engine, "_grounded_cache", {})
+    constraints = cache.get("constraints", []) if isinstance(cache, dict) else []
+    if constraints:
+        return True
+
+    lowered = text.casefold()
+    return (
+        any(marker in lowered for marker in _EXPLICIT_MEMORY_MARKERS)
+        or is_substantive_memory_statement(text)
+    )
 
 
 def build_memory_query(messages: List[ChatMessage]) -> str:
@@ -83,15 +157,83 @@ def build_memory_query(messages: List[ChatMessage]) -> str:
     
     return "\n".join(lines)
 
+def build_response_guard(user_msg: str, system_prompt: str) -> str:
+    answer_focus = extract_answer_focus(system_prompt)
+    primary = answer_focus.get("primary_candidate") or {}
+    policy = answer_focus.get("answer_policy") or "No structured answer focus."
+    focus = json.dumps({
+        "request_type": answer_focus.get("request_type"),
+        "answer_policy": policy,
+        "current_observation": answer_focus.get("current_observation"),
+        "primary_candidate": primary,
+    }, ensure_ascii=False)
+    return (
+        "CURRENT RESPONSE MODE OVERRIDE:\n"
+        "- Treat the latest user message as ordinary conversation unless it explicitly asks about grammar, dictionary form, roots, lemmas, or intent extraction.\n"
+        "- Do NOT answer with a dictionary/root/lemma explanation for ordinary chat fragments such as 'gidiyorum' or 'I'm going'.\n"
+        "- If the user asks for a remembered destination, blocker, owner, decision, or fact and ANSWER FOCUS has a primary_candidate, lead with it before generic alternatives.\n"
+        "- Structured answer focus:\n"
+        f"{focus}"
+    )
+
+
+def extract_answer_focus(system_prompt: str) -> dict:
+    marker = "[ANSWER FOCUS]"
+    start = system_prompt.find(marker)
+    if start < 0:
+        return {}
+    payload_start = start + len(marker)
+    end_candidates = [
+        index for index in (
+            system_prompt.find("\n[", payload_start),
+            system_prompt.find("\n===", payload_start),
+        )
+        if index >= 0
+    ]
+    payload_end = min(end_candidates) if end_candidates else len(system_prompt)
+    payload = system_prompt[payload_start:payload_end].strip()
+    try:
+        return json.loads(payload)
+    except Exception:
+        return {}
+
+
 def build_openai_messages(system_prompt: str, messages: List[ChatMessage]) -> list[dict]:
     oai_msgs = [{"role": "system", "content": system_prompt}]
+    if messages:
+        oai_msgs.append({"role": "system", "content": build_response_guard(messages[-1].content, system_prompt)})
     for msg in messages[-MAX_SHORT_HISTORY:]:
         role = msg.role if msg.role in {"user", "assistant"} else "user"
         oai_msgs.append({"role": role, "content": msg.content})
     return oai_msgs
 
 
-def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int = 20) -> tuple[list[dict], list[str]]:
+def looks_like_language_analysis_leak(user_msg: str, response: str) -> bool:
+    user_lower = (user_msg or "").casefold()
+    asked_language = any(token in user_lower for token in [
+        "kök", "koku", "fiil", "mast", "sözlük", "sozluk", "lemma", "root", "dictionary", "intent"
+    ])
+    if asked_language:
+        return False
+    resp = (response or "").casefold()
+    return (
+        ("fiil" in resp and ("temel" in resp or "sözlük" in resp or "sozluk" in resp or "gitmek" in resp))
+        or ("dictionary form" in resp)
+        or ("root form" in resp)
+        or ("lemma" in resp)
+    )
+
+
+def fallback_conversation_response(user_msg: str, system_prompt: str) -> str:
+    answer_focus = extract_answer_focus(system_prompt)
+    candidate = answer_focus.get("primary_candidate") or {}
+    label = candidate.get("label")
+    if label:
+        return f"Bence {label} tarafı en güçlü hafıza adayı gibi duruyor. Eminlik: {candidate.get('confidence', 'medium')}."
+    return "Bir yere gidiyorsun gibi okuyorum; bunu dil bilgisi sorusu değil, rota sohbetinin devamı olarak alıyorum. Nereye olduğunu tahmin etmemi istiyorsan biraz daha ipucu ver."
+
+
+def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int = 35) -> tuple[list[dict], list[str]]:
     store = memory._store
     node_order: list[str] = []
     active_ids: set[str] = set()
@@ -117,9 +259,16 @@ def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int
 
     for item in mem_result.get("memories", {}).get("items", [])[:12]:
         is_direct = item.get("layer") == 0
-        add_label(item.get("intent"), active=is_direct)
+        item_intent_id = item.get("intent_id")
+        if item_intent_id:
+            add_intent_id(item_intent_id, active=is_direct)
+        else:
+            add_label(item.get("intent"), active=is_direct)
         for label in item.get("path", []):
-            add_label(label, active=is_direct and label == item.get("intent"))
+            if label == item.get("intent") and item_intent_id:
+                add_intent_id(item_intent_id, active=is_direct)
+            else:
+                add_label(label, active=is_direct and label == item.get("intent"))
 
     for item in cog_field.get("activated_intents", [])[:max_nodes]:
         add_intent_id(item.get("intent_id"), active=item.get("role") == "seed")
@@ -128,11 +277,10 @@ def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int
         add_label(label, active=True)
 
     # Expand the graph to include immediate neighbors of active nodes
-    # This fulfills the request to "see all connections of an intent"
     expanded_relevant = set(node_order[:max_nodes])
     for intent_id in list(expanded_relevant):
-        neighbors = sorted(store.get_neighbors(intent_id), key=lambda x: x[1].weight * x[1].confidence, reverse=True)
-        for target_id, edge in neighbors[:2]:
+        neighbors = sorted(store.get_neighbors(intent_id, include_candidates=True), key=lambda x: x[1].weight * x[1].confidence, reverse=True)
+        for target_id, edge in neighbors[:25]:
             if target_id not in expanded_relevant:
                 expanded_relevant.add(target_id)
                 if target_id not in node_order:
@@ -145,7 +293,7 @@ def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int
         if not intent:
             continue
         edges = []
-        for target_id, edge in store.get_neighbors(intent_id):
+        for target_id, edge in store.get_neighbors(intent_id, include_candidates=True):
             if target_id not in relevant:
                 continue
             target = store.intents.get(target_id)
@@ -182,6 +330,62 @@ def build_query_graph(memory: IntentmindMemory, mem_result: dict, max_nodes: int
             active_ids.add(label)
 
     return nodes, list(active_ids)
+
+
+def build_stored_memory_trace(memory: IntentmindMemory, chunk_id: str | None) -> dict | None:
+    if not chunk_id:
+        return None
+    store = memory._store
+    chunk = store.chunks.get(chunk_id)
+    if not chunk:
+        return None
+
+    intents = [
+        store.intents[intent_id]
+        for intent_id in chunk.intent_ids
+        if intent_id in store.intents
+    ]
+    relevant_ids = {intent.intent_id for intent in intents}
+    edge_items = []
+    seen_edges = set()
+    for intent in intents:
+        for target_id, edge in store.get_neighbors(intent.intent_id, include_candidates=True):
+            if target_id not in relevant_ids or edge.edge_id in seen_edges:
+                continue
+            target = store.intents.get(target_id)
+            if not target:
+                continue
+            seen_edges.add(edge.edge_id)
+            edge_items.append({
+                "from": intent.label,
+                "to": target.label,
+                "type": edge.edge_type,
+                "weight": round(edge.weight, 3),
+                "confidence": round(edge.confidence, 3),
+                "state": edge.state,
+            })
+
+    return {
+        "chunk_id": chunk.chunk_id,
+        "source": chunk.source,
+        "text": chunk.text[:180],
+        "intents": [intent.label for intent in intents],
+        "edges": edge_items,
+    }
+
+
+def find_latest_chunk_id_by_text(memory: IntentmindMemory, text: str) -> str | None:
+    if not text:
+        return None
+    matches = [
+        chunk
+        for chunk in memory._store.chunks.values()
+        if chunk.text == text
+    ]
+    if not matches:
+        return None
+    matches.sort(key=lambda chunk: chunk.created_at, reverse=True)
+    return matches[0].chunk_id
 
 
 @app.post("/api/chat")
@@ -224,11 +428,17 @@ async def chat(req: ChatRequest):
                 messages=oai_msgs
             )
             ai_response = completion.choices[0].message.content
+            if looks_like_language_analysis_leak(user_msg, ai_response):
+                ai_response = fallback_conversation_response(user_msg, system_prompt)
         except Exception as e:
             ai_response = f"API error: {str(e)}"
         
-        if STORE_USER_CHAT and user_msg.strip():
-            memory.add(text=user_msg, source="user")
+        stored_chunk_id = None
+        if STORE_USER_CHAT and should_store_user_chat(user_msg):
+            stored_result = memory.add(text=user_msg, source="user")
+            stored_chunk_id = getattr(stored_result, "chunk_id", stored_result)
+            if not stored_chunk_id:
+                stored_chunk_id = find_latest_chunk_id_by_text(memory, user_msg)
 
         # AI response ingestion DISABLED.
         # Reason: AI's own verbose responses were flooding the memory graph,
@@ -274,6 +484,8 @@ async def chat(req: ChatRequest):
                 "text": item["text"][:120],
             })
 
+        stored_trace = build_stored_memory_trace(memory, stored_chunk_id)
+
         return {
             "response": ai_response,
             "field": {
@@ -291,6 +503,7 @@ async def chat(req: ChatRequest):
                 "resonant": resonant,
                 "memories_used": len(path_items),
                 "items": path_items,
+                "newly_stored": stored_trace,
             }
         }
     except Exception as e:
@@ -300,4 +513,4 @@ async def chat(req: ChatRequest):
         return {"response": f"API CRASH: {str(e)}", "field": {"nodes": [], "active_ids": [], "stats": fallback_stats}}
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("api:app", host="127.0.0.1", port=API_PORT, reload=API_RELOAD)
