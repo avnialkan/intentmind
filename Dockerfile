@@ -1,7 +1,7 @@
 FROM python:3.10
 
-# Node.js kurulumu
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+# Node.js kurulumu (Vite gereksinimi nedeniyle Node 20+)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs
 
 # HF Spaces güvenlik gereksinimi: Non-root kullanıcı oluşturma
