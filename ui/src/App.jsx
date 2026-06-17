@@ -1,5 +1,38 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+// ─── SESSION & DEMO ───────────────────────────────────────────────────────────
+// Each browser tab gets a unique id so the backend keeps its cognitive graph
+// isolated from every other visitor's. Stored per-tab, not persisted.
+const SESSION_ID = (() => {
+  try {
+    let id = sessionStorage.getItem("im_session");
+    if (!id) {
+      id = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `s-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      sessionStorage.setItem("im_session", id);
+    }
+    return id;
+  } catch (e) {
+    return `s-${Date.now()}`;
+  }
+})();
+
+// Scripted walkthrough: teach two facts, then ask a tangential question and
+// watch the graph connect car → insurance → London on its own.
+const DEMO_STEPS = [
+  "I bought a new car and I'm driving to London next week.",
+  "I need car insurance but I have almost no money right now.",
+  "I have a car and I'm going to London — what should I keep in mind?",
+];
+
+// Single-click starters for free exploration.
+const SUGGESTIONS = [
+  "My favorite coffee is espresso and I dislike filter coffee.",
+  "I'm planning a trip to Tokyo in spring.",
+  "I work as a backend engineer and I love Python.",
+];
+
 // ─── STYLES & THEMING ─────────────────────────────────────────────────────────
 const COLORS = {
   bg1: "#212121",
@@ -579,25 +612,27 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  const send = useCallback(async () => {
-    const text = input.trim();
+  const postTurn = useCallback(async (convo) => {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Session-Id": SESSION_ID },
+      body: JSON.stringify({ messages: convo }),
+    });
+    if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
+    return res.json();
+  }, []);
+
+  const send = useCallback(async (overrideText) => {
+    const text = (typeof overrideText === "string" ? overrideText : input).trim();
     if (!text || loading) return;
     setInput("");
     setLoading(true);
 
-    const userMsg = { role: "user", content: text };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    const convo = [...messages, { role: "user", content: text }];
+    setMessages(convo);
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages }),
-      });
-      if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
-      
-      const data = await res.json();
+      const data = await postTurn(convo);
       setMessages(prev => [...prev, { role: "assistant", content: data.response, cognitivePath: data.cognitive_path }]);
       setField(data.field);
     } catch (e) {
@@ -605,7 +640,40 @@ export default function App() {
     }
 
     setLoading(false);
-  }, [input, loading, messages]);
+  }, [input, loading, messages, postTurn]);
+
+  // Guided demo: play a scripted sequence so visitors watch the graph form and
+  // the associative recall path light up without having to invent prompts.
+  const runScenario = useCallback(async (steps) => {
+    if (loading) return;
+    setInput("");
+    setLoading(true);
+    let convo = [...messages];
+    for (const step of steps) {
+      convo = [...convo, { role: "user", content: step }];
+      setMessages(convo);
+      try {
+        const data = await postTurn(convo);
+        convo = [...convo, { role: "assistant", content: data.response, cognitivePath: data.cognitive_path }];
+        setMessages(convo);
+        setField(data.field);
+      } catch (e) {
+        setMessages(prev => [...prev, { role: "assistant", content: "Connection Error: " + e.message }]);
+        break;
+      }
+    }
+    setLoading(false);
+  }, [loading, messages, postTurn]);
+
+  const resetSession = useCallback(async () => {
+    if (loading) return;
+    try {
+      await fetch("/api/reset", { method: "POST", headers: { "X-Session-Id": SESSION_ID } });
+    } catch (e) { /* best-effort */ }
+    setMessages([]);
+    setField({ nodes: [], active_ids: [], stats: { total_nodes: 0, total_edges: 0, avg_energy: 0, total_chunks: 0 } });
+    setSelectedNode(null);
+  }, [loading]);
 
   const handleKey = (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -641,9 +709,21 @@ export default function App() {
               }} />
               <div>
                 <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: 0.5, color: COLORS.text }}>Intentmind Core</div>
-                <div style={{ fontSize: 11, color: COLORS.muted }}>v0.3.0 (Cognitive Layer)</div>
+                <div style={{ fontSize: 11, color: COLORS.muted }}>v0.4.2 · isolated demo session</div>
               </div>
             </div>
+            <button
+              onClick={resetSession}
+              disabled={loading}
+              title="Clear this session's memory and start fresh"
+              style={{
+                padding: "8px 14px", borderRadius: 16, background: "transparent",
+                color: COLORS.muted, border: `1px solid ${COLORS.border}`,
+                fontSize: 12, cursor: loading ? "wait" : "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              ↺ New session
+            </button>
           </div>
 
           {/* Messages Area */}
@@ -651,12 +731,50 @@ export default function App() {
             {messages.length === 0 && (
               <div style={{
                 display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                height: "100%", color: COLORS.muted, opacity: 0.6
+                height: "100%", color: COLORS.muted, textAlign: "center"
               }}>
                 <div style={{ fontSize: 48, marginBottom: 16, filter: "drop-shadow(0 0 10px rgba(255,255,255,0.2))" }}>✺</div>
-                <div style={{ fontSize: 16, fontWeight: 500, letterSpacing: 1 }}>SYSTEM READY</div>
-                <div style={{ fontSize: 12, marginTop: 8, maxWidth: 300, textAlign: "center", lineHeight: 1.6 }}>
-                  Query the knowledge graph. Real-time cognitive tracking enabled.
+                <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: 0.5, color: COLORS.text }}>Watch a memory form</div>
+                <div style={{ fontSize: 13, marginTop: 10, maxWidth: 440, lineHeight: 1.6 }}>
+                  Intentmind doesn't just store text — it builds an associative graph.
+                  Run the 3-step demo and watch it connect{" "}
+                  <b style={{ color: COLORS.accent }}>car</b> →{" "}
+                  <b style={{ color: COLORS.accent }}>insurance</b> →{" "}
+                  <b style={{ color: COLORS.accent }}>London</b> on its own.
+                </div>
+
+                <button
+                  onClick={() => runScenario(DEMO_STEPS)}
+                  disabled={loading}
+                  style={{
+                    marginTop: 24, padding: "12px 22px", borderRadius: 24,
+                    background: COLORS.accent, color: "#fff", border: "none",
+                    fontSize: 14, fontWeight: 600, cursor: loading ? "wait" : "pointer",
+                    boxShadow: `0 4px 20px ${COLORS.accentGlow}`,
+                  }}
+                >
+                  ▶ Run the guided memory demo
+                </button>
+
+                <div style={{ fontSize: 11, marginTop: 28, marginBottom: 10, letterSpacing: 1, textTransform: "uppercase", opacity: 0.7 }}>
+                  or teach it something yourself
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", maxWidth: 460 }}>
+                  {SUGGESTIONS.map((s, i) => (
+                    <button
+                      key={i}
+                      onClick={() => send(s)}
+                      disabled={loading}
+                      style={{
+                        padding: "8px 14px", borderRadius: 16,
+                        background: COLORS.bg3, color: COLORS.text,
+                        border: `1px solid ${COLORS.border}`, fontSize: 12,
+                        cursor: loading ? "wait" : "pointer", textAlign: "left",
+                      }}
+                    >
+                      {s}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -752,9 +870,10 @@ export default function App() {
         body { margin: 0; background: ${COLORS.bg1}; color: ${COLORS.text}; font-family: 'Inter', sans-serif; overflow: hidden; }
         
         .app-container { position: relative; height: 100vh; width: 100vw; overflow: hidden; }
-        
-        
-          to { transform: scaleY(1.2); }
+
+        @keyframes fadeSlideUp {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
         }
 
         /* Custom Scrollbar */

@@ -5,7 +5,9 @@ import time
 from pathlib import Path
 import uvicorn
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI
+from collections import OrderedDict
+import threading
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -43,15 +45,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("[Sistem] Embedder ve Hafıza Yükleniyor...")
+print("[Sistem] Embedder Yükleniyor...")
 embedder = SentenceTransformerEmbedder()
 
-db_path = "memory.json"
-if os.path.exists(db_path):
-    print(f"[Sistem] {db_path} yükleniyor...")
-    memory = IntentmindMemory.load(db_path, embedder=embedder)
-else:
-    memory = IntentmindMemory(embedder=embedder, index_type="faiss")
+# ── Per-session memory isolation ────────────────────────────────────────────
+# The public demo must never mix one visitor's memories into another's, so each
+# browser session gets its own fresh cognitive graph. Nothing is persisted to
+# disk; sessions live in RAM only and the oldest are evicted past the cap.
+MAX_SESSIONS = int(os.getenv("INTENTMIND_MAX_SESSIONS", "200"))
+_SESSIONS: "OrderedDict[str, IntentmindMemory]" = OrderedDict()
+_SESSIONS_LOCK = threading.Lock()
+
+
+def get_session_memory(session_id: str | None) -> IntentmindMemory:
+    sid = (session_id or "").strip() or "default"
+    with _SESSIONS_LOCK:
+        mem = _SESSIONS.get(sid)
+        if mem is None:
+            mem = IntentmindMemory(embedder=embedder, index_type="faiss")
+            _SESSIONS[sid] = mem
+            while len(_SESSIONS) > MAX_SESSIONS:
+                _SESSIONS.popitem(last=False)  # evict least-recently-used
+        else:
+            _SESSIONS.move_to_end(sid)
+        return mem
+
+
+def reset_session_memory(session_id: str | None) -> None:
+    sid = (session_id or "").strip() or "default"
+    with _SESSIONS_LOCK:
+        _SESSIONS.pop(sid, None)
 
 model_name = os.getenv("OPENAI_MODEL")
 if not model_name:
@@ -122,7 +145,7 @@ def is_substantive_memory_statement(text: str) -> bool:
     return "?" not in text and len(non_request_tokens) >= 5
 
 
-def should_store_user_chat(text: str) -> bool:
+def should_store_user_chat(text: str, mem: IntentmindMemory) -> bool:
     """
     Long-term memory should contain durable user facts, not every short query.
     Short-term chat history already handles follow-ups inside the current turn.
@@ -132,7 +155,7 @@ def should_store_user_chat(text: str) -> bool:
     if STORE_ALL_USER_CHAT:
         return True
 
-    cache = getattr(memory._intent_engine, "_grounded_cache", {})
+    cache = getattr(mem._intent_engine, "_grounded_cache", {})
     constraints = cache.get("constraints", []) if isinstance(cache, dict) else []
     if constraints:
         return True
@@ -391,18 +414,29 @@ def find_latest_chunk_id_by_text(memory: IntentmindMemory, text: str) -> str | N
     return matches[0].chunk_id
 
 
+@app.post("/api/reset")
+async def reset_session(request: Request):
+    """Drop the caller's session graph so they can start from a clean brain."""
+    reset_session_memory(request.headers.get("x-session-id"))
+    return {"ok": True}
+
+
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     try:
         # Get the latest user message
         if not req.messages:
             return {"response": "API CRASH: empty message list", "field": {"nodes": [], "active_ids": [], "stats": {}}}
+
+        # Each browser session owns an isolated cognitive graph.
+        mem = get_session_memory(request.headers.get("x-session-id"))
+
         user_msg = req.messages[-1].content
         memory_query = build_memory_query(req.messages)
 
         # Query first. Chat text is short-term context; it should not create
         # long-term graph nodes unless explicitly enabled by env.
-        mem_result = memory.query(user_query=user_msg, context_text=memory_query)
+        mem_result = mem.query(user_query=user_msg, context_text=memory_query)
         # Use the prompt already built by runtime.query() — it has access
         # to the raw recall_result (direct_memories, associated_memories etc.)
         # which PromptBuilder needs.  Re-creating a PromptBuilder here and
@@ -437,11 +471,11 @@ async def chat(req: ChatRequest):
             ai_response = f"API error: {str(e)}"
         
         stored_chunk_id = None
-        if STORE_USER_CHAT and should_store_user_chat(user_msg):
-            stored_result = memory.add(text=user_msg, source="user")
+        if STORE_USER_CHAT and should_store_user_chat(user_msg, mem):
+            stored_result = mem.add(text=user_msg, source="user")
             stored_chunk_id = getattr(stored_result, "chunk_id", stored_result)
             if not stored_chunk_id:
-                stored_chunk_id = find_latest_chunk_id_by_text(memory, user_msg)
+                stored_chunk_id = find_latest_chunk_id_by_text(mem, user_msg)
 
         # AI response ingestion DISABLED.
         # Reason: AI's own verbose responses were flooding the memory graph,
@@ -452,16 +486,16 @@ async def chat(req: ChatRequest):
         #     memory.add(text=ai_response, source="ai")
         
         # Tick memory decay
-        memory.tick()
-        
+        mem.tick()
+
         # Build UI graph AFTER ingestion and decay so new nodes and edges exist!
-        nodes, active_ids = build_query_graph(memory, mem_result)
-        
-        # Persist to disk so memories survive restarts
-        memory.save(db_path)
-        
-        stats_dict = memory._store.stats()
-        all_energies = [n.energy for n in memory._store.intents.values()]
+        nodes, active_ids = build_query_graph(mem, mem_result)
+
+        # NOTE: no disk persistence — session graphs are intentionally ephemeral
+        # so the public demo stays clean for every visitor.
+
+        stats_dict = mem._store.stats()
+        all_energies = [n.energy for n in mem._store.intents.values()]
         avg_energy = sum(all_energies) / len(all_energies) if all_energies else 0.0
 
         # Build cognitive path for UI transparency
@@ -487,7 +521,7 @@ async def chat(req: ChatRequest):
                 "text": item["text"][:120],
             })
 
-        stored_trace = build_stored_memory_trace(memory, stored_chunk_id)
+        stored_trace = build_stored_memory_trace(mem, stored_chunk_id)
 
         return {
             "response": ai_response,
